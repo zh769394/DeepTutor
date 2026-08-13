@@ -1,0 +1,40 @@
+name: 自动同步Fork上游仓库
+# 触发规则：定时每天凌晨0点执行；也可以手动点击运行
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置Git信息
+        run: |
+          git config --global user.name "github‑actions[bot]"
+          git config --global user.email "actions@github.com"
+
+      - name: 添加上游仓库
+        run: git remote add upstream https://github.com/HKUDS/DeepTutor.git
+
+      - name: 获取上游所有分支
+        run: git fetch upstream
+
+      # 同步main主分支
+      - name: 同步main分支
+        run: |
+          git checkout main
+          git merge upstream/main
+          git push origin main
+
+      # 同步你的dev开发分支（适配你当前项目）
+      - name: 同步dev分支
+        run: |
+          git checkout dev
+          git merge upstream/dev
+          git push origin dev
