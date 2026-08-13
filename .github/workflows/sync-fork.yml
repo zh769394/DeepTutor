@@ -18,23 +18,24 @@ jobs:
           git config --global user.name "github‑actions[bot]"
           git config --global user.email "actions@github.com"
       
-      # 先删除旧upstream，防止重复添加报错
       - name: 重置上游仓库
         run: |
           git remote remove upstream || true
           git remote add upstream https://github.com/HKUDS/DeepTutor.git
 
-      - name: 获取上游全部分支
-        run: git fetch upstream
+      - name: 获取全部远程分支
+        run: git fetch --all
 
-      - name: 同步 main 分支
+      # 同步 main
+      - name: 更新main分支
         run: |
           git checkout main
-          git merge --no-ff upstream/main
+          git merge upstream/main
           git push origin main
 
-      - name: 同步 dev 分支
+      # 同步 dev，强制指定本地分支，消除分支名歧义
+      - name: 更新dev分支
         run: |
-          git checkout dev
-          git merge --no-ff upstream/dev
+          git checkout origin/dev -b dev || git checkout dev
+          git merge upstream/dev
           git push origin dev
