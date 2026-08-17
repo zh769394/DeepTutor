@@ -11,7 +11,7 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v5
         with:
-          token:${{secrets.SYNC_TOKEN}} # 20260817因同步出错，增加PAT权限
+          token: ${{secrets.SYNC_TOKEN}} # 20260817因同步出错，增加PAT权限
           fetch-depth: 0
 
       - name: 配置Git用户
