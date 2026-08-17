@@ -43,7 +43,7 @@ jobs:
           # git merge upstream/dev
           # git push origin dev
           # 20260817因同步出错，跟main分支一样，dev分支也优化更新逻辑如下
-          git checkout dev
+          git checkout --track origin/dev || git checkout dev
           git pull origin dev --rebase || true
           git merge upstream/dev --no-edit || true
           git push origin dev
