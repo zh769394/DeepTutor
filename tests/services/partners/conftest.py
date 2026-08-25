@@ -1,10 +1,18 @@
-"""Fixtures for the partners service suite — isolate all paths under tmp_path."""
+"""Fixtures for the partners service suite — isolate all paths under tmp_path.
+
+Also holds the scripted-orchestrator scaffolding every runtime-level test
+needs: a partner turn is a chat-loop run, and the tests care about what the
+runner does with the loop's events, not about the loop itself.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from deeptutor.core.stream import StreamEvent
 
 
 @pytest.fixture
@@ -28,3 +36,50 @@ def partners_root(tmp_path, monkeypatch) -> Path:
 
     admin_root.mkdir(parents=True, exist_ok=True)
     return admin_root / "partners"
+
+
+class _FakeOrchestrator:
+    """Yields a scripted event sequence instead of running the chat loop."""
+
+    script: list[StreamEvent] = []
+    # Optional queue of per-turn scripts; when non-empty, each handle() call
+    # pops the next one (lets tests model a failed turn + a backup retry).
+    scripts: list[list[StreamEvent]] = []
+    seen_contexts: list[Any] = []
+    activated_selections: list[Any] = []
+    # The memory root in effect while the turn runs — proves the partner reads
+    # the owner's (admin) memory via memory_path_service_override, not its own.
+    seen_memory_roots: list[Any] = []
+
+    def __init__(self) -> None:
+        pass
+
+    async def handle(self, context):
+        from deeptutor.services.memory.paths import memory_root
+
+        type(self).seen_contexts.append(context)
+        type(self).seen_memory_roots.append(memory_root())
+        script = type(self).scripts.pop(0) if type(self).scripts else type(self).script
+        for event in script:
+            yield event
+
+
+@pytest.fixture
+def fake_orchestrator(monkeypatch):
+    import deeptutor.runtime.orchestrator as orch_mod
+    from deeptutor.services.model_selection import runtime as selection_runtime
+
+    _FakeOrchestrator.script = []
+    _FakeOrchestrator.scripts = []
+    _FakeOrchestrator.seen_contexts = []
+    _FakeOrchestrator.activated_selections = []
+    _FakeOrchestrator.seen_memory_roots = []
+    monkeypatch.setattr(orch_mod, "ChatOrchestrator", _FakeOrchestrator)
+
+    def _record_activate(selection):
+        _FakeOrchestrator.activated_selections.append(selection)
+        return (None, None)
+
+    monkeypatch.setattr(selection_runtime, "activate_llm_selection", _record_activate)
+    monkeypatch.setattr(selection_runtime, "reset_llm_selection", lambda token: None)
+    return _FakeOrchestrator
