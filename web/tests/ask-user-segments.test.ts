@@ -48,15 +48,27 @@ const resolved = (toolCallId: string) =>
   });
 
 test("reasoning produced after a card becomes its own segment below it", () => {
-  const before = event("thinking", { call_id: "round-1" }, "planning a question");
-  const after = event("thinking", { call_id: "round-2" }, "grading their answer");
+  const before = event(
+    "thinking",
+    { call_id: "round-1" },
+    "planning a question",
+  );
+  const after = event(
+    "thinking",
+    { call_id: "round-2" },
+    "grading their answer",
+  );
 
   const segments = extractMessageSegments([
     before,
     askUserCard("call-1"),
     resolved("call-1"),
     after,
-    event("content", { call_id: "round-2", call_kind: "agent_loop_round" }, "Correct!"),
+    event(
+      "content",
+      { call_id: "round-2", call_kind: "agent_loop_round" },
+      "Correct!",
+    ),
   ]);
 
   assert.deepEqual(
@@ -78,7 +90,11 @@ test("the pre-card rounds stay with the top activity block", () => {
 
   const leading = leadingTraceEvents(events, extractMessageSegments(events));
 
-  assert.deepEqual(leading, [before, askUserCard("call-1"), resolved("call-1")]);
+  assert.deepEqual(leading, [
+    before,
+    askUserCard("call-1"),
+    resolved("call-1"),
+  ]);
 });
 
 test("a turn with no card keeps every event in the top block", () => {

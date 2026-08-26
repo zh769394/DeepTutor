@@ -126,10 +126,12 @@ class LLMConfig:
         return replace(self, **(update or {}))
 
     def get_api_key(self) -> str:
-        """Return the API key string for provider consumers."""
-        if isinstance(self.api_key, list):
-            return self.api_key[0] if self.api_key else ""
-        return self.api_key
+        """Return the API key string for provider consumers.
+
+        The empty string, not ``None``, because callers here test it for
+        truthiness and pass it straight into a provider argument.
+        """
+        return primary_api_key(self.api_key) or ""
 
 
 _LLM_CONFIG_CACHE: LLMConfig | None = None

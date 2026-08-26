@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from deeptutor.services.imagegen.config import ImagegenConfig
+from deeptutor.services.keypool import primary_api_key
 from deeptutor.services.model_selection import LLMSelection, apply_llm_selection_to_catalog
 from deeptutor.services.provider_registry import (
     NANOBOT_LLM_PROVIDERS,
@@ -596,12 +597,6 @@ def _as_api_key(value: Any) -> str | list[str]:
     return _as_str(value)
 
 
-def _primary_api_key(value: str | list[str]) -> str:
-    return (
-        value[0] if isinstance(value, list) and value else value if isinstance(value, str) else ""
-    )
-
-
 def _to_headers(value: Any) -> dict[str, str]:
     if isinstance(value, dict):
         return {str(k): str(v) for k, v in value.items() if str(k).strip() and v is not None}
@@ -688,7 +683,7 @@ def _choose_resolved_provider(
     explicit_spec = find_by_name(hint) if hint else None
     detected_gateway = find_gateway(
         provider_name=None,
-        api_key=_primary_api_key(api_key) or None,
+        api_key=primary_api_key(api_key),
         api_base=api_base or None,
     )
     # Keep backward compatibility: old `binding=openai` should not block

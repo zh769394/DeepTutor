@@ -22,9 +22,17 @@ def partners_root(tmp_path, monkeypatch) -> Path:
     Everything the partners layer touches resolves through
     ``deeptutor.multi_user.paths`` — the partners data dir is anchored at the
     admin workspace root and partner scopes are synthetic ``UserScope``s — so
-    patching that module is sufficient to keep tests off the real ``data/``.
+    patching that module covers the partners layer itself.
+
+    ``identity`` is a second front, and patching ``paths`` does *not* reach it:
+    it binds ``AUTH_DIR = SYSTEM_ROOT / "auth"`` at import, so a later
+    ``setattr`` on ``paths.SYSTEM_ROOT`` leaves its module-level file constants
+    pointing at the real ``data/system/auth/``. Any test that saves a user was
+    therefore writing into the developer's own account store, and reading it
+    back — which made the outcome depend on who already had an account there,
+    since the first account in a store is force-promoted to admin.
     """
-    from deeptutor.multi_user import paths
+    from deeptutor.multi_user import identity, paths
 
     project_root = tmp_path
     admin_root = (project_root / "data").resolve()
@@ -33,6 +41,13 @@ def partners_root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(paths, "USERS_ROOT", admin_root / "users")
     monkeypatch.setattr(paths, "SYSTEM_ROOT", admin_root / "system")
     monkeypatch.setattr(paths, "_path_services", {})
+
+    auth_dir = admin_root / "system" / "auth"
+    monkeypatch.setattr(identity, "AUTH_DIR", auth_dir)
+    monkeypatch.setattr(identity, "USERS_FILE", auth_dir / "users.json")
+    monkeypatch.setattr(identity, "SECRET_FILE", auth_dir / "auth_secret")
+    monkeypatch.setattr(identity, "LEGACY_USERS_FILE", project_root / "legacy_users.json")
+    monkeypatch.setattr(identity, "LEGACY_SECRET_FILE", project_root / "legacy_secret")
 
     admin_root.mkdir(parents=True, exist_ok=True)
     return admin_root / "partners"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from deeptutor.services.keypool import KeyPool
+from deeptutor.services.keypool import KeyPool, primary_api_key
 
 
 def test_keypool_rotates_in_round_robin_order() -> None:
@@ -79,3 +79,30 @@ def test_keypool_prefers_the_soonest_recovering_key_when_all_are_cooling(
 
     now["value"] = 20.0
     assert pool.next() == "key-a"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("sk-a", "sk-a"),
+        (["sk-a"], "sk-a"),
+        (["sk-a", "sk-b"], "sk-a"),
+        # An empty key is not a key, in either spelling — so a caller can test
+        # the result instead of knowing which shape the config happened to use.
+        ("", None),
+        (None, None),
+        ([], None),
+        ([""], None),
+    ],
+)
+def test_primary_api_key_reduces_every_configured_shape(value, expected) -> None:
+    assert primary_api_key(value) == expected
+
+
+def test_llm_config_get_api_key_uses_the_same_reduction() -> None:
+    """``LLMConfig.get_api_key`` is a ``-> str`` front door, not a second copy."""
+    from deeptutor.services.llm.config import LLMConfig
+
+    for value in ("sk-a", ["sk-a", "sk-b"], "", [], [""]):
+        config = LLMConfig(api_key=value, model="gpt-5")
+        assert config.get_api_key() == (primary_api_key(value) or "")

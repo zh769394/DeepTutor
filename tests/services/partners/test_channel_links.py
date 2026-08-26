@@ -22,12 +22,21 @@ from tests.services.partners.scripts import finish
 
 @pytest.fixture
 def alice(partners_root):
-    """A real account — identity is re-read from the user store on every turn."""
+    """A real, **non-admin** account — identity is re-read on every turn.
+
+    The admin is saved first on purpose. The first account in a store is
+    force-promoted to admin regardless of the role asked for, and an admin's
+    scope *is* the shared pool — so an alice who happened to be first would
+    make "her private history" and "the shared pool" the same directory, and
+    every assertion that they differ would pass or fail on account order.
+    """
     from deeptutor.multi_user import identity
     from deeptutor.services.partners.interaction import actor_for_account
 
-    identity.save_user("alice", "hash", "user")
-    return actor_for_account(identity.get_user("alice")["id"])
+    identity.save_user("root", "hash", "admin")
+    record = identity.save_user("alice", "hash", "user")
+    assert record["role"] == "user", "alice must not be the store's first account"
+    return actor_for_account(record["id"])
 
 
 # ── code lifecycle ────────────────────────────────────────────
@@ -208,7 +217,6 @@ async def test_link_command_binds_the_sender_mid_conversation(partners_root, fak
 
 @pytest.mark.asyncio
 async def test_link_command_refuses_a_group_chat(partners_root, fake_orchestrator):
-
     runner = PartnerRunner("ada", PartnerConfig(name="Ada"), MessageBus())
     code = links.issue_link_code("ada", "u_alice").code
 

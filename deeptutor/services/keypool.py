@@ -65,10 +65,13 @@ def primary_api_key(value: str | list[str] | None) -> str | None:
     through would render as ``"['sk-a', 'sk-b']"`` in an ``Authorization``
     header — a 401 whose cause is invisible. Reduce at the boundary instead,
     and reduce in one place so every such boundary agrees which key is first.
+
+    An empty key is not a key, in either shape: ``""``, ``[]`` and ``[""]``
+    all answer ``None``, so a caller can test the result rather than having
+    to know which spelling the configuration happened to use.
     """
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value or None
+    first = value[0] if isinstance(value, list) and value else value
+    return first or None if isinstance(first, str) else None
 
 
 __all__ = ["KeyPool", "primary_api_key"]
