@@ -29,6 +29,8 @@ export interface SessionMessage {
 
 export interface SessionPreferences {
   capability?: string;
+  /** Stable learning surface, independent of the action used for a turn. */
+  workspace_mode?: "immersive_reading" | "mastery_path" | "";
   tools?: string[];
   knowledge_bases?: string[];
   language?: string;
@@ -45,7 +47,11 @@ export interface SessionPreferences {
   course_id?: string;
   /** Source conversation for nested selected-text tutor threads. */
   parent_session_id?: string;
-  session_kind?: "chat" | "selection_tutor";
+  session_kind?: "chat" | "selection_tutor" | "immersive_reading";
+  /** Owning Immersive Reading workspace, present only for reading sessions. */
+  reading_workspace_id?: string;
+  /** Material active when the reading conversation was created. */
+  reading_material_id?: string;
   pinned?: boolean;
   archived?: boolean;
 }
@@ -177,6 +183,28 @@ export async function getSession(
     signal,
   });
   return expectJson<SessionDetail>(response);
+}
+
+/**
+ * One line the user is likely to type next, for the home composer's
+ * placeholder — "" when there is nothing worth offering (no exchange yet,
+ * a timeout, a model that didn't come back with something usable).
+ */
+export async function fetchSessionAskHint(
+  sessionId: string,
+  init?: RequestInit,
+): Promise<string> {
+  try {
+    const response = await apiFetch(
+      apiUrl(`/api/v1/sessions/${sessionId}/ask-hint`),
+      { cache: "no-store", ...init },
+    );
+    const result = await expectJson<{ hint?: string }>(response);
+    return typeof result.hint === "string" ? result.hint : "";
+  } catch {
+    // A missing hint is not a failure the composer should ever surface.
+    return "";
+  }
 }
 
 export async function updateSessionTitle(

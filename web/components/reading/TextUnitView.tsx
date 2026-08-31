@@ -20,6 +20,7 @@ import {
   SunMoon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import RichMarkdownRenderer from "@/components/common/RichMarkdownRenderer";
 import type { AnnotationItem, UnitKind } from "@/lib/reading-api";
 import { getUnitText } from "@/lib/reading-api";
 import {
@@ -41,6 +42,7 @@ import {
   type ReaderHeading,
 } from "@/lib/reading-outline";
 import { cleanQuote } from "@/lib/reading-selection";
+import { MarkdownLine } from "@/lib/reading-inline-markdown";
 import { toRecogitoTextAnnotation } from "@/lib/reading-w3c-annotations";
 import type { JumpRequest, SelectionPayload } from "./PdfDocumentView";
 
@@ -59,6 +61,7 @@ export interface TextUnitViewProps {
   materialId: string;
   unit: UnitKind;
   unitCount: number;
+  contentFormat?: "plain_text" | "web_markdown";
   annotations: AnnotationItem[];
   jump: JumpRequest | null;
   highlightedAnnotationId?: string | null;
@@ -83,6 +86,7 @@ export function TextUnitView({
   materialId,
   unit,
   unitCount,
+  contentFormat = "plain_text",
   annotations,
   jump,
   highlightedAnnotationId,
@@ -115,6 +119,7 @@ export function TextUnitView({
   const [lineWidth, setLineWidth] = useState(DEFAULT_LINE_WIDTH);
   const [serif, setSerif] = useState(true);
   const [readerTheme, setReaderTheme] = useState<ReaderTheme>("auto");
+  const isWebMarkdown = contentFormat === "web_markdown";
 
   useEffect(() => {
     try {
@@ -331,6 +336,20 @@ export function TextUnitView({
   );
 
   useEffect(() => {
+    if (!isWebMarkdown) return;
+    const article = articleRef.current;
+    if (!article || loading || error) return;
+    article
+      .querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")
+      .forEach((element, index) => {
+        const heading = pageHeadings[index];
+        if (!heading) return;
+        element.id = heading.id;
+        element.dataset.readerHeadingId = heading.id;
+      });
+  }, [error, isWebMarkdown, loading, pageHeadings]);
+
+  useEffect(() => {
     headingsChangeRef.current?.(pageHeadings);
     return () => headingsChangeRef.current?.([]);
   }, [pageHeadings]);
@@ -542,9 +561,9 @@ export function TextUnitView({
         ) : (
           <article
             ref={articleRef}
-            className={`mx-auto whitespace-pre-wrap leading-[1.75] selection:bg-[var(--primary)]/20 ${
-              serif ? "font-serif" : "font-sans"
-            }`}
+            className={`mx-auto leading-[1.75] selection:bg-[var(--primary)]/20 ${
+              isWebMarkdown ? "" : "whitespace-pre-wrap "
+            }${serif ? "font-serif" : "font-sans"}`}
             style={{
               maxWidth: `${lineWidth}ch`,
               fontSize: `${fontSize}px`,
@@ -555,6 +574,16 @@ export function TextUnitView({
               <span className="text-[var(--muted-foreground)]">
                 {t("This section has no extractable text.")}
               </span>
+            ) : isWebMarkdown ? (
+              <RichMarkdownRenderer
+                content={text}
+                allowHtml={false}
+                enableMath
+                enableCode
+                enableMermaid={false}
+                enableImages
+                variant="prose"
+              />
             ) : (
               <TextWithHeadings text={text} headings={pageHeadings} />
             )}
@@ -621,6 +650,13 @@ function TextWithHeadings({
             | "h4"
             | "h5"
             | "h6";
+          const titleOffset = line.text.indexOf(line.heading.title);
+          const markerPrefix =
+            titleOffset >= 0 ? line.text.slice(0, titleOffset) : "";
+          const markerSuffix =
+            titleOffset >= 0
+              ? line.text.slice(titleOffset + line.heading.title.length)
+              : "";
           return (
             <Fragment key={key}>
               {lineIndex > 0 && "\n"}
@@ -629,7 +665,23 @@ function TextWithHeadings({
                 data-reader-heading-id={line.heading.id}
                 className="mt-5 mb-2 font-serif text-[var(--foreground)] first:mt-0"
               >
-                {line.text}
+                {markerPrefix && (
+                  <span
+                    aria-hidden="true"
+                    className="inline-block size-0 overflow-hidden align-top text-[0px]"
+                  >
+                    {markerPrefix}
+                  </span>
+                )}
+                {titleOffset >= 0 ? line.heading.title : line.text}
+                {markerSuffix && (
+                  <span
+                    aria-hidden="true"
+                    className="inline-block size-0 overflow-hidden align-top text-[0px]"
+                  >
+                    {markerSuffix}
+                  </span>
+                )}
               </Heading>
             </Fragment>
           );
@@ -637,7 +689,9 @@ function TextWithHeadings({
         return (
           <Fragment key={key}>
             {lineIndex > 0 && "\n"}
-            {line.text}
+            {/* Fenced code stays completely literal — Markdown syntax
+                inside a code block is content, not formatting. */}
+            {line.fence ? line.text : <MarkdownLine text={line.text} />}
           </Fragment>
         );
       })}
