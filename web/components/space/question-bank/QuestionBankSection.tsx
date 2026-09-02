@@ -133,8 +133,11 @@ export default function QuestionBankSection() {
         sort={bank.sort}
         refreshing={bank.refreshing}
         managerOpen={managerOpen}
+        filters={bank.reviewFilters}
+        materials={bank.materials}
         onSearchChange={bank.setSearchInput}
         onSortChange={bank.setSort}
+        onFiltersChange={bank.setReviewFilters}
         onToggleManager={() => setManagerOpen((open) => !open)}
       />
 
@@ -231,6 +234,7 @@ export default function QuestionBankSection() {
                 disabled={bank.pendingIds.has(entry.id)}
                 onToggleSelected={() => bank.toggleSelected(entry.id)}
                 onToggleBookmark={() => void bank.toggleBookmark(entry)}
+                onToggleResolved={() => void bank.toggleResolved(entry)}
                 onDelete={() => {
                   if (window.confirm(t("Delete this entry?")))
                     void bank.removeEntry(entry);

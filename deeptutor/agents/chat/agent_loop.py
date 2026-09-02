@@ -38,13 +38,13 @@ from typing import TYPE_CHECKING, Any
 from deeptutor.agents._shared.capability_result import emit_capability_result
 from deeptutor.agents.chat.context_budget import LLMRequestSnapshot
 from deeptutor.agents.chat.dsml_tool_calls import DSMLStreamFilter, extract_dsml_tool_calls
-from deeptutor.core.agentic.messages import assistant_message_with_tool_calls
-from deeptutor.core.agentic.tool_call_stream import ToolCallAccumulator
-from deeptutor.core.agentic.tool_dispatch import DispatchOutcome
-from deeptutor.core.agentic.usage import message_content_chars, record_streamed_usage
 from deeptutor.core.context import UnifiedContext
-from deeptutor.core.stream_bus import StreamBus
 from deeptutor.core.trace import build_trace_metadata, merge_trace_metadata, new_call_id
+from deeptutor.runtime.agentic.messages import assistant_message_with_tool_calls
+from deeptutor.runtime.agentic.tool_call_stream import ToolCallAccumulator
+from deeptutor.runtime.agentic.tool_dispatch import DispatchOutcome
+from deeptutor.runtime.agentic.usage import message_content_chars, record_streamed_usage
+from deeptutor.runtime.stream_bus import StreamBus
 from deeptutor.services.llm import LLMProviderTransportError, clean_thinking_tags
 from deeptutor.services.llm.capabilities import threads_session_id
 from deeptutor.services.llm.multimodal import should_degrade_to_text, strip_image_parts_inplace
@@ -54,6 +54,9 @@ from deeptutor.services.llm.request_compat import (
     is_tool_schema_unsupported,
     is_transient_transport_error,
     logged_error_text,
+)
+from deeptutor.services.session.provider_response_state import (
+    normalize_provider_response_state,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -162,9 +165,10 @@ class AgentLoopState:
 class LLMCallResult:
     text: str
     visible_text: str = ""
+    response_output_items: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_content: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
-    reasoning_content: str = ""
     deferred_chunk_metadata: dict[str, Any] | None = None
     deferred_completion_metadata: dict[str, Any] | None = None
 
@@ -181,6 +185,32 @@ class LoopOutcome:
 
     final_text: str = ""
     completed: bool = False
+    provider_response_state: dict[str, Any] | None = None
+
+
+def _provider_response_state(
+    response_output_items: list[dict[str, Any]],
+    reasoning_content: str,
+) -> dict[str, Any] | None:
+    state: dict[str, Any] = {}
+    if response_output_items:
+        state["responses_output_items"] = response_output_items
+    if reasoning_content:
+        state["reasoning_content"] = reasoning_content
+    return normalize_provider_response_state(state)
+
+
+def _assistant_round_message(result: LLMCallResult) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": "assistant", "content": result.text}
+    state = _provider_response_state(result.response_output_items, result.reasoning_content)
+    if state is not None:
+        message["_provider_response_state"] = state
+    if result.reasoning_content:
+        # Some chat-completions reasoning models require this field on the
+        # immediately following round. Historical turns rebuild it from the
+        # private provider state instead.
+        message["reasoning_content"] = result.reasoning_content
+    return message
 
 
 class AgentLoop:
@@ -241,6 +271,8 @@ class AgentLoop:
                 state=state,
                 checkpoint_boundary=len(messages),
             )
+        if outcome.provider_response_state is not None:
+            self.context.runtime.provider_response_state = outcome.provider_response_state
 
         if state.sources:
             await self.stream.sources(
@@ -372,11 +404,7 @@ class AgentLoop:
                     if result.visible_text:
                         continued_answer_parts.append(result.visible_text)
                     if result.text:
-                        self._append_assistant_turn(
-                            messages,
-                            content=result.text,
-                            reasoning_content=result.reasoning_content,
-                        )
+                        messages.append(_assistant_round_message(result))
                     self._append_loop_instruction(
                         messages,
                         self.pipeline._t(
@@ -409,11 +437,7 @@ class AgentLoop:
                         metadata={"trace_kind": "warning"},
                     )
                     if result.text:
-                        self._append_assistant_turn(
-                            messages,
-                            content=result.text,
-                            reasoning_content=result.reasoning_content,
-                        )
+                        messages.append(_assistant_round_message(result))
                     self._append_loop_instruction(
                         messages,
                         self.pipeline._t(
@@ -436,11 +460,7 @@ class AgentLoop:
                     if not finish_redirect_used:
                         finish_redirect_used = True
                         if result.text:
-                            self._append_assistant_turn(
-                                messages,
-                                content=result.text,
-                                reasoning_content=result.reasoning_content,
-                            )
+                            messages.append(_assistant_round_message(result))
                         self._append_loop_instruction(messages, finish_redirect)
                         continue
                     await self.stream.progress(
@@ -461,11 +481,11 @@ class AgentLoop:
                 )
                 if final_override is not None:
                     await self._discard_deferred_output(result)
-                    if not self.context.metadata.get("_capability_answer_published"):
+                    if not self.context.capability_output.answer_published:
                         await self.pipeline._emit_protocol_fallback_final_response(
                             self.stream, final_override
                         )
-                        self.context.metadata["_capability_answer_published"] = True
+                        self.context.capability_output.answer_published = True
                     return await self._finalize_finish(
                         final_override,
                         continued_answer_parts=continued_answer_parts,
@@ -477,6 +497,10 @@ class AgentLoop:
                     final_text,
                     visible_text=result.visible_text,
                     continued_answer_parts=continued_answer_parts,
+                    provider_response_state=_provider_response_state(
+                        result.response_output_items,
+                        result.reasoning_content,
+                    ),
                 )
 
             tool_names = tuple(str(call.get("name") or "") for call in result.tool_calls)
@@ -491,13 +515,18 @@ class AgentLoop:
                 if output_policy == "publish" and result.deferred_completion_metadata is not None:
                     result.deferred_completion_metadata["answer_visible"] = True
                 await self._release_deferred_output(result)
-            messages.append(
-                assistant_message_with_tool_calls(
-                    result.text,
-                    result.tool_calls,
-                    reasoning_content=result.reasoning_content or None,
-                )
+            assistant = assistant_message_with_tool_calls(
+                result.text,
+                result.tool_calls,
+                reasoning_content=result.reasoning_content or None,
             )
+            provider_state = _provider_response_state(
+                result.response_output_items,
+                result.reasoning_content,
+            )
+            if provider_state is not None:
+                assistant["_provider_response_state"] = provider_state
+            messages.append(assistant)
             dispatch = await self.pipeline._dispatch_tool_calls(
                 tool_calls=result.tool_calls,
                 context=self.context,
@@ -531,11 +560,11 @@ class AgentLoop:
 
             final_override = self.pipeline._capability_final_text_override(self.context, "")
             if final_override is not None:
-                if not self.context.metadata.get("_capability_answer_published"):
+                if not self.context.capability_output.answer_published:
                     await self.pipeline._emit_protocol_fallback_final_response(
                         self.stream, final_override
                     )
-                    self.context.metadata["_capability_answer_published"] = True
+                    self.context.capability_output.answer_published = True
                 return await self._finalize_finish(
                     final_override,
                     continued_answer_parts=continued_answer_parts,
@@ -578,19 +607,6 @@ class AgentLoop:
             messages[-1]["content"] = f"{prior}\n\n{instruction}" if prior else instruction
             return
         messages.append({"role": "user", "content": instruction})
-
-    @staticmethod
-    def _append_assistant_turn(
-        messages: list[dict[str, Any]],
-        *,
-        content: str,
-        reasoning_content: str = "",
-    ) -> None:
-        """Append an assistant row, replaying thinking-mode reasoning when present."""
-        message: dict[str, Any] = {"role": "assistant", "content": content}
-        if reasoning_content:
-            message["reasoning_content"] = reasoning_content
-        messages.append(message)
 
     def _fold_context_checkpoint(
         self,
@@ -665,6 +681,10 @@ class AgentLoop:
             result.text,
             visible_text=result.visible_text,
             continued_answer_parts=continued_answer_parts,
+            provider_response_state=_provider_response_state(
+                result.response_output_items,
+                result.reasoning_content,
+            ),
         )
 
     async def _finalize_finish(
@@ -674,6 +694,7 @@ class AgentLoop:
         visible_text: str | None = None,
         continued_answer_parts: list[str] | None = None,
         allow_empty: bool = False,
+        provider_response_state: dict[str, Any] | None = None,
     ) -> LoopOutcome:
         cleaned_text = self._clean(raw_text)
         if continued_answer_parts:
@@ -694,7 +715,11 @@ class AgentLoop:
                 ),
             )
             await self.pipeline._emit_protocol_fallback_final_response(self.stream, final_text)
-        return LoopOutcome(final_text=final_text, completed=True)
+        return LoopOutcome(
+            final_text=final_text,
+            completed=True,
+            provider_response_state=provider_response_state,
+        )
 
     async def _release_deferred_output(self, result: LLMCallResult) -> None:
         """Publish a buffered capability round only after its protocol accepts it."""
@@ -818,6 +843,7 @@ class AgentLoop:
             usage_seen: Any = None
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            response_output_items: list[dict[str, Any]] = []
             tool_acc = ToolCallAccumulator()
             output_chars = 0
             finish_reason = ""
@@ -859,6 +885,16 @@ class AgentLoop:
                     choice = choices[0]
                     if getattr(choice, "finish_reason", None):
                         finish_reason = str(choice.finish_reason)
+                    provider_fields = getattr(choice, "provider_specific_fields", None)
+                    if isinstance(provider_fields, dict):
+                        native_items = provider_fields.get("native_output_items")
+                        if isinstance(native_items, list) and any(
+                            isinstance(item, dict) and item.get("type") == "reasoning"
+                            for item in native_items
+                        ):
+                            response_output_items = [
+                                dict(item) for item in native_items if isinstance(item, dict)
+                            ]
                     delta = getattr(choice, "delta", None)
                     if delta is None:
                         continue
@@ -869,9 +905,9 @@ class AgentLoop:
                         None,
                     )
                     if reasoning_text:
+                        reasoning_parts.append(reasoning_text)
                         output_chars += len(reasoning_text)
                         output_emitted = True
-                        reasoning_parts.append(reasoning_text)
                         await self.stream.thinking(
                             reasoning_text, source=self.source, stage=stage, metadata=chunk_meta
                         )
@@ -1054,9 +1090,10 @@ class AgentLoop:
         return LLMCallResult(
             text=text,
             visible_text="".join(visible_text_parts),
+            response_output_items=response_output_items,
+            reasoning_content="".join(reasoning_parts),
             tool_calls=tool_calls,
             finish_reason=finish_reason,
-            reasoning_content="".join(reasoning_parts),
             deferred_chunk_metadata=chunk_meta if defer_visible_output else None,
             deferred_completion_metadata=(
                 completion_event_metadata if defer_visible_output else None

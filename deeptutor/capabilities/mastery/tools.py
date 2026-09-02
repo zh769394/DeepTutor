@@ -250,6 +250,7 @@ async def _resolve_pending_choice(
 
 async def _sync_mastery_attempt_to_question_bank(
     *,
+    path_id: str,
     session_id: str,
     turn_id: str,
     pending: PendingQuestion,
@@ -257,6 +258,8 @@ async def _sync_mastery_attempt_to_question_bank(
     is_correct: bool,
     choice_options: dict[str, str] | None = None,
     correct_answer: str | None = None,
+    material_title: str = "",
+    section_title: str = "",
 ) -> None:
     if not session_id:
         return
@@ -273,6 +276,11 @@ async def _sync_mastery_attempt_to_question_bank(
         "difficulty": pending.difficulty,
         "user_answer": user_answer,
         "is_correct": is_correct,
+        "source": "mastery_path",
+        "material_id": path_id,
+        "material_title": material_title,
+        "section_id": pending.knowledge_point_id,
+        "section_title": section_title,
     }
     try:
         from deeptutor.services.session import get_sqlite_session_store
@@ -705,7 +713,9 @@ class MasteryGradeTool(BaseTool):
         # Upsert on every call, including an idempotent replay: if the first
         # best-effort sync timed out, a safe retry repairs the auxiliary
         # question bank without duplicating the mastery attempt.
+        kp, _, _ = find_knowledge_point(progress, pending.knowledge_point_id)
         await _sync_mastery_attempt_to_question_bank(
+            path_id=path_id,
             session_id=interaction.session_id or _resolve_session_id(kwargs),
             turn_id=interaction.turn_id or _resolve_turn_id(kwargs),
             pending=pending,
@@ -715,8 +725,9 @@ class MasteryGradeTool(BaseTool):
             is_correct=is_correct,
             choice_options=choice_options,
             correct_answer=expected_answer,
+            material_title=progress.name,
+            section_title=kp.name if kp else "",
         )
-        kp, _, _ = find_knowledge_point(progress, pending.knowledge_point_id)
         mastered = bool(kp and is_mastered(progress, kp))
         payload = {
             "is_correct": is_correct,

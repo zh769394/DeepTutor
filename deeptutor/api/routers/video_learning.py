@@ -12,16 +12,19 @@ import httpx
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from deeptutor.services.notebook.service import NotebookCorruptedError
 from deeptutor.video_learning import (
     TimedMediaError,
     TimedMediaNotFound,
     get_timed_media_store,
     load_video_learning_settings,
     material_with_playback,
+    refresh_invidious_transcript,
     resolve_material,
     save_video_learning_settings,
     test_invidious_connection,
 )
+from deeptutor.video_learning import notes as video_notes
 
 router = APIRouter()
 settings_router = APIRouter()
@@ -39,6 +42,15 @@ class ResolveRequest(BaseModel):
 class ProgressRequest(BaseModel):
     time_seconds: float = Field(ge=0, le=24 * 60 * 60)
     duration_seconds: float = Field(default=0, ge=0, le=24 * 60 * 60)
+
+
+class CreateVideoNoteRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=20_000)
+    time_seconds: float = Field(ge=0, le=24 * 60 * 60)
+
+
+class UpdateVideoNoteRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=20_000)
 
 
 class YouTubeSettings(BaseModel):
@@ -63,6 +75,19 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, TimedMediaError):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Video learning could not complete the request.")
+
+
+def _note_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, NotebookCorruptedError):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "notebook_unreadable",
+                "notebook_id": exc.notebook_id,
+                "message": str(exc),
+            },
+        )
+    return _http_error(exc)
 
 
 @settings_router.get("")
@@ -108,6 +133,14 @@ async def get_video_material(material_id: str) -> dict[str, Any]:
         raise _http_error(exc) from exc
 
 
+@router.post("/materials/{material_id}/transcript/refresh")
+async def refresh_video_transcript(material_id: str) -> dict[str, Any]:
+    try:
+        return await refresh_invidious_transcript(material_id)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
 @router.put("/materials/{material_id}/progress")
 async def save_video_progress(material_id: str, payload: ProgressRequest) -> dict[str, float]:
     try:
@@ -124,6 +157,48 @@ async def save_video_progress(material_id: str, payload: ProgressRequest) -> dic
         return {"time_seconds": position, "duration_seconds": duration}
     except Exception as exc:
         raise _http_error(exc) from exc
+
+
+@router.get("/materials/{material_id}/notes")
+async def list_video_notes(material_id: str) -> list[dict[str, Any]]:
+    try:
+        return video_notes.list_notes(video_notes.get_notebook_manager(), material_id)
+    except Exception as exc:
+        raise _note_error(exc) from exc
+
+
+@router.post("/materials/{material_id}/notes")
+async def create_video_note(material_id: str, payload: CreateVideoNoteRequest) -> dict[str, Any]:
+    try:
+        return video_notes.create_note(
+            video_notes.get_notebook_manager(),
+            material_id,
+            payload.body,
+            payload.time_seconds,
+        )
+    except Exception as exc:
+        raise _note_error(exc) from exc
+
+
+@router.put("/materials/{material_id}/notes/{note_id}")
+async def update_video_note(
+    material_id: str, note_id: str, payload: UpdateVideoNoteRequest
+) -> dict[str, Any]:
+    try:
+        return video_notes.update_note(
+            video_notes.get_notebook_manager(), material_id, note_id, payload.body
+        )
+    except Exception as exc:
+        raise _note_error(exc) from exc
+
+
+@router.delete("/materials/{material_id}/notes/{note_id}")
+async def delete_video_note(material_id: str, note_id: str) -> dict[str, str]:
+    try:
+        deleted = video_notes.delete_note(video_notes.get_notebook_manager(), material_id, note_id)
+        return {"status": "deleted" if deleted else "missing"}
+    except Exception as exc:
+        raise _note_error(exc) from exc
 
 
 def _vtt_timestamp(value: Any) -> str:
@@ -256,7 +331,14 @@ async def _open_upstream(
     raise TimedMediaError("Video stream returned too many redirects.")
 
 
-@router.api_route("/materials/{material_id}/stream/{format_id}", methods=["GET", "HEAD"])
+@router.get(
+    "/materials/{material_id}/stream/{format_id}",
+    operation_id="stream_video_get",
+)
+@router.head(
+    "/materials/{material_id}/stream/{format_id}",
+    operation_id="stream_video_head",
+)
 async def stream_video(material_id: str, format_id: str, request: Request):
     try:
         range_header = request.headers.get("range")

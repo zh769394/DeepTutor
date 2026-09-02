@@ -721,8 +721,8 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
     """Load the full text of an attached Space source by its manifest id.
 
     The chat pipeline auto-enables this tool whenever a turn has any non-image
-    attached source (notebook record, book reference, history session,
-    question-bank entry, or document attachment). The per-turn full-text
+    attached source (notebook record, book reference, reading unit, history
+    session, question-bank entry, or document attachment). The per-turn full-text
     payload is carried in ``context.metadata["source_index"]`` as
     ``{source_id: str}`` and injected into the tool call by
     ``_augment_tool_kwargs``. The tool itself stays stateless.
@@ -745,8 +745,8 @@ class ReadSourceTool(_PromptHintsMixin, BaseTool):
                     description=(
                         "The source identifier from the Attached Sources "
                         "manifest. Begins with one of: nb- (notebook record), "
-                        "bk- (book reference), hs- (history session), qb- "
-                        "(question-bank entry), at- (document attachment)."
+                        "bk- (book reference), rd- (reading unit), hs- (history "
+                        "session), qb- (question-bank entry), at- (document attachment)."
                     ),
                 ),
             ],

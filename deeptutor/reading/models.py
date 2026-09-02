@@ -25,7 +25,7 @@ UnitKind = Literal["page", "chapter", "slide", "section", "segment"]
 RenderMode = Literal["text", "pdf", "epub", "video", "audio"]
 ContentFormat = Literal["plain_text", "web_markdown"]
 
-AnnotationKind = Literal["highlight", "underline", "note"]
+AnnotationKind = Literal["highlight", "underline", "note", "citation"]
 TextSelectorType = Literal["TextQuoteSelector", "TextPositionSelector"]
 MAX_TEXT_SELECTOR_CHARS = 2000
 
@@ -344,6 +344,9 @@ class Annotation:
 
     annotation_id: str
     locator: int
+    # Content revision the verified locator/selectors were captured against.
+    # Legacy rows predate revisioned web snapshots and therefore resolve to 1.
+    material_revision: int = 1
     kind: AnnotationKind = "highlight"
     color: str = DEFAULT_ANNOTATION_COLOR
     quote: str = ""
@@ -365,6 +368,7 @@ class Annotation:
         return {
             "annotation_id": self.annotation_id,
             "locator": self.locator,
+            "material_revision": self.material_revision,
             "kind": self.kind,
             "color": self.color,
             "quote": self.quote,
@@ -389,7 +393,8 @@ class Annotation:
         return cls(
             annotation_id=str(data.get("annotation_id") or ""),
             locator=max(1, int(data.get("locator") or 1)),
-            kind=kind if kind in ("highlight", "underline", "note") else "highlight",  # type: ignore[arg-type]
+            material_revision=max(1, int(data.get("material_revision") or 1)),
+            kind=(kind if kind in ("highlight", "underline", "note", "citation") else "highlight"),  # type: ignore[arg-type]
             color=color if color in ANNOTATION_COLORS else DEFAULT_ANNOTATION_COLOR,
             quote=str(data.get("quote") or ""),
             note=str(data.get("note") or ""),

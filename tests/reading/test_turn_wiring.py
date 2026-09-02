@@ -20,6 +20,7 @@ from deeptutor.services.session.turn_runtime import (
     READING_SELECTION_MAX_CHARS,
     TurnRuntimeManager,
     _reading_material_id,
+    _reading_references,
     _reading_viewport,
     _request_snapshot_metadata,
     _workspace_mode,
@@ -92,6 +93,19 @@ def test_nonsense_locators_are_dropped() -> None:
 def test_selection_is_bounded_because_it_enters_the_prompt() -> None:
     viewport = _reading_viewport({"selection": "x" * (READING_SELECTION_MAX_CHARS * 3)})
     assert len(viewport["selection"]) == READING_SELECTION_MAX_CHARS
+
+
+def test_explicit_reading_references_are_normalized_at_the_turn_boundary() -> None:
+    assert _reading_references(
+        [
+            {
+                "material_id": "ABCDEF0123456789",
+                "revision": 4,
+                "locators": [2, 2, "3"],
+            },
+            {"material_id": "../../etc", "revision": 1, "locators": [1]},
+        ]
+    ) == [{"material_id": "abcdef0123456789", "revision": 4, "locators": [2, 3]}]
 
 
 # ---------------------------------------------------------------------------
@@ -196,3 +210,26 @@ async def test_empty_workspace_starts_in_no_material_mode(
         assert detail["preferences"]["capability"] == "chat"
     finally:
         PathService.reset_instance()
+
+
+def test_explicit_reading_references_are_persisted_for_retry() -> None:
+    snapshot = _request_snapshot_metadata(
+        content="hi",
+        capability="chat",
+        payload={},
+        attachments=[],
+        config={},
+        notebook_references=[],
+        history_references=[],
+        partner_group_references=[],
+        question_notebook_references=[],
+        book_references=[],
+        reading_references=[{"material_id": "abcdef0123456789", "revision": 1, "locators": [1, 2]}],
+        persona="",
+        memory_references=[],
+        llm_selection=None,
+    )["request_snapshot"]
+
+    assert snapshot["readingReferences"] == [
+        {"material_id": "abcdef0123456789", "revision": 1, "locators": [1, 2]}
+    ]

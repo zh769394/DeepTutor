@@ -6,12 +6,13 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
+import sys
 from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -324,12 +325,31 @@ class TimedMediaStore:
             raise TimedMediaNotFound("Timed media material was not found.")
         lock_root = self.root / ".locks"
         lock_root.mkdir(parents=True, exist_ok=True)
-        with (lock_root / f"{material_id}.lock").open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        # Binary + msvcrt on Windows (fcntl is Unix-only). Mirror
+        # ``codex_auth.storage`` so importing this module does not break
+        # ``deeptutor start`` on Windows (#1140 / #1143).
+        with (lock_root / f"{material_id}.lock").open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.seek(0)
+                if sys.platform == "win32":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def get_timed_media_store() -> TimedMediaStore:
@@ -411,38 +431,67 @@ async def _youtube_resolution(request: YouTubeRequest, language: str) -> Provide
     return ProviderResolution(metadata, cues, transcript_language, transcript_source, [])
 
 
+async def _invidious_metadata(
+    client: httpx.AsyncClient, base: str, video_id: str
+) -> dict[str, Any]:
+    response = await client.get(f"{base}/api/v1/videos/{video_id}")
+    if response.status_code >= 400:
+        raise TimedMediaError(f"Invidious request failed with HTTP {response.status_code}.")
+    try:
+        metadata = response.json()
+    except ValueError as exc:
+        raise TimedMediaError("Invidious returned invalid video metadata.") from exc
+    if not isinstance(metadata, dict):
+        raise TimedMediaError("Invidious returned invalid video metadata.")
+    return metadata
+
+
+async def _invidious_transcript(
+    client: httpx.AsyncClient,
+    base: str,
+    video_id: str,
+    captions: Any,
+    language: str,
+    *,
+    raise_on_failure: bool = False,
+) -> tuple[list[dict[str, Any]], str, str]:
+    caption = _caption_choice(captions, language)
+    if not caption:
+        return [], "", "unavailable"
+
+    label = str(caption.get("label") or "")
+    transcript_language = str(
+        caption.get("languageCode") or caption.get("language_code") or language
+    )
+    caption_response = await client.get(
+        f"{base}/api/v1/captions/{video_id}",
+        params={"label": label} if label else {},
+    )
+    if caption_response.status_code >= 400:
+        if raise_on_failure:
+            raise TimedMediaError(
+                f"Invidious captions request failed with HTTP {caption_response.status_code}."
+            )
+        return [], transcript_language, "unavailable"
+    if len(caption_response.content) > MAX_TRANSCRIPT_BYTES:
+        if raise_on_failure:
+            raise TimedMediaError("Invidious captions exceeded the safety limit.")
+        return [], transcript_language, "unavailable"
+
+    cues = normalize_cues(parse_webvtt(caption_response.text))
+    return cues, transcript_language, "invidious" if cues else "unavailable"
+
+
 async def _invidious_resolution(request: YouTubeRequest, language: str) -> ProviderResolution:
     settings = load_video_learning_settings()
     base = settings["invidious"]["api_base_url"]
     if not base:
         raise TimedMediaError("Invidious is not configured.")
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
-        response = await client.get(f"{base}/api/v1/videos/{request.video_id}")
-        if response.status_code >= 400:
-            raise TimedMediaError(f"Invidious request failed with HTTP {response.status_code}.")
-        try:
-            metadata = response.json()
-        except ValueError as exc:
-            raise TimedMediaError("Invidious returned invalid video metadata.") from exc
-        if not isinstance(metadata, dict):
-            raise TimedMediaError("Invidious returned invalid video metadata.")
-        caption = _caption_choice(metadata.get("captions"), language)
-        cues: list[dict[str, Any]] = []
-        transcript_language = ""
-        if caption:
-            label = str(caption.get("label") or "")
-            transcript_language = str(
-                caption.get("languageCode") or caption.get("language_code") or language
-            )
-            caption_response = await client.get(
-                f"{base}/api/v1/captions/{request.video_id}",
-                params={"label": label} if label else {},
-            )
-            if (
-                caption_response.status_code == 200
-                and len(caption_response.content) <= MAX_TRANSCRIPT_BYTES
-            ):
-                cues = normalize_cues(parse_webvtt(caption_response.text))
+        metadata = await _invidious_metadata(client, base, request.video_id)
+        cues, transcript_language, transcript_source = await _invidious_transcript(
+            client, base, request.video_id, metadata.get("captions"), language
+        )
         formats: list[dict[str, Any]] = []
         for row in metadata.get("formatStreams") or []:
             if not isinstance(row, dict):
@@ -464,7 +513,7 @@ async def _invidious_resolution(request: YouTubeRequest, language: str) -> Provi
             metadata,
             cues,
             transcript_language,
-            "invidious" if cues else "unavailable",
+            transcript_source,
             formats,
         )
 
@@ -604,6 +653,49 @@ async def material_with_playback(material_id: str) -> dict[str, Any]:
     return public_material(material, provider=provider)
 
 
+async def refresh_invidious_transcript(material_id: str) -> dict[str, Any]:
+    """Refresh one stored material's captions without changing its playback state."""
+    store = get_timed_media_store()
+    material = store.get(material_id)
+    source = material.get("source") if isinstance(material.get("source"), dict) else {}
+    video_id = str(source.get("video_id") or "")
+    if not VIDEO_ID_RE.fullmatch(video_id):
+        raise TimedMediaNotFound("Timed media material was not found.")
+    if not material.get("provider_cache", {}).get("invidious_formats"):
+        raise TimedMediaError("Invidious playback is not available for this material.")
+
+    settings = load_video_learning_settings()
+    base = settings["invidious"]["api_base_url"]
+    if not base:
+        raise TimedMediaError("Invidious is not configured.")
+    transcript = material.get("transcript") if isinstance(material.get("transcript"), dict) else {}
+    language = str(transcript.get("language") or "")
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+        metadata = await _invidious_metadata(client, base, video_id)
+        cues, transcript_language, transcript_source = await _invidious_transcript(
+            client,
+            base,
+            video_id,
+            metadata.get("captions"),
+            language,
+            raise_on_failure=True,
+        )
+
+    refreshed_transcript = {
+        "status": "ready" if cues else "unavailable",
+        "reason": "" if cues else transcript_source,
+        "language": transcript_language,
+        "source": transcript_source,
+        "cues": cues,
+    }
+    with store.lock(material_id):
+        latest = store.get(material_id)
+        latest["transcript"] = refreshed_transcript
+        latest["segments"] = build_segments(cues)
+        saved = store.save(latest)
+    return public_material(saved, provider="invidious")
+
+
 def public_material(material: dict[str, Any], *, provider: str) -> dict[str, Any]:
     payload = {key: value for key, value in material.items() if key != "provider_cache"}
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
@@ -613,13 +705,17 @@ def public_material(material: dict[str, Any], *, provider: str) -> dict[str, Any
     if provider == "invidious":
         formats = material.get("provider_cache", {}).get("invidious_formats") or []
         best = formats[0] if formats else {}
+        revision = str(material.get("updated_at") or "")
+        subtitles_url = f"/api/video-learning/materials/{payload['material_id']}/subtitles.vtt"
+        if revision:
+            subtitles_url = f"{subtitles_url}?{urlencode({'revision': revision})}"
         payload["playback"] = {
             "provider": "invidious",
             "kind": "html5",
             "format_id": str(best.get("format_id") or ""),
             "mime_type": str(best.get("mime_type") or "video/mp4"),
-            "stream_url": f"/api/v1/video-learning/materials/{payload['material_id']}/stream/{best.get('format_id', '')}",
-            "subtitles_url": f"/api/v1/video-learning/materials/{payload['material_id']}/subtitles.vtt",
+            "stream_url": f"/api/video-learning/materials/{payload['material_id']}/stream/{best.get('format_id', '')}",
+            "subtitles_url": subtitles_url,
             "start_seconds": start,
         }
     else:
@@ -662,6 +758,7 @@ __all__ = [
     "parse_webvtt",
     "parse_youtube_url",
     "public_material",
+    "refresh_invidious_transcript",
     "resolve_material",
     "save_video_learning_settings",
     "test_invidious_connection",

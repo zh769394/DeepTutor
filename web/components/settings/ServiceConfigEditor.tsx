@@ -42,7 +42,7 @@ import {
   getActiveModel,
   getActiveProfile,
   useSettings,
-} from "./SettingsContext";
+} from "@/features/settings/store/SettingsStore";
 import { DimensionField } from "./DimensionField";
 import {
   AddCard,
@@ -283,7 +283,7 @@ export function ServiceConfigEditor({ service }: { service: ServiceName }) {
     const profileId = activeProfile.id;
     setModelsSyncing(true);
     try {
-      const response = await apiFetch(apiUrl("/api/v1/settings/fetch-models"), {
+      const response = await apiFetch(apiUrl("/api/settings/fetch-models"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1295,6 +1295,9 @@ function ProfileFields({
     profile,
   );
   const isCodeBuddyAuth = service === "llm" && providerValue === "codebuddy";
+  const supportsWireApiSelection =
+    service === "llm" && providerOption?.supports_wire_api_selection === true;
+  const wireApi = profile.wire_api || "auto";
 
   const fields =
     isCodexOAuth || isCodeBuddyAuth
@@ -1429,7 +1432,7 @@ function ProfileFields({
           </span>
           <span className="flex items-center gap-3">
             <Link
-              href="/settings/models#connections"
+              href="/settings#connections"
               className="inline-flex items-center gap-1 text-[11.5px] text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
             >
               {t("Edit connection")}
@@ -1511,6 +1514,44 @@ function ProfileFields({
               )}
             </button>
           </div>
+        </div>
+      )}
+      {supportsWireApiSelection && (
+        <div className="sm:col-span-2">
+          <div className="mb-1.5 text-[12px] text-[var(--muted-foreground)]">
+            {t("API protocol")}
+          </div>
+          <div className="relative">
+            <select
+              className={selectClass}
+              value={wireApi}
+              onChange={(event) =>
+                updateProfileField(service, "wire_api", event.target.value)
+              }
+            >
+              <option className={selectOptionClass} value="auto">
+                {t("Auto (recommended)")}
+              </option>
+              <option className={selectOptionClass} value="responses">
+                {t("Responses API")}
+              </option>
+              <option className={selectOptionClass} value="chat_completions">
+                {t("Chat Completions")}
+              </option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
+            {wireApi === "responses"
+              ? t(
+                  "Require the Responses API. Endpoint errors are returned without falling back.",
+                )
+              : wireApi === "chat_completions"
+                ? t("Require the Chat Completions API.")
+                : t(
+                    "Automatically select the protocol and fall back when supported.",
+                  )}
+          </p>
         </div>
       )}
       {!isCodexOAuth && !isCodeBuddyAuth && (

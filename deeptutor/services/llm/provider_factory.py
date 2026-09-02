@@ -37,6 +37,7 @@ def _provider_cache_key(config: LLMConfig, loop: asyncio.AbstractEventLoop) -> t
         config.effective_url or config.base_url or "",
         config.api_version or "",
         headers,
+        config.wire_api,
         config.temperature,
         config.max_tokens,
         config.reasoning_effort,
@@ -101,6 +102,7 @@ def _build_runtime_provider(llm_config: LLMConfig) -> LLMProvider:
             extra_headers=llm_config.extra_headers or None,
             spec=spec,
             provider_name=provider_name,
+            wire_api=llm_config.wire_api,
         )
 
     provider.generation = GenerationSettings(

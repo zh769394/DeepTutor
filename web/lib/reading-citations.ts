@@ -43,6 +43,7 @@ const READING_EVIDENCE_TOOLS = new Set([
 
 export interface ReadingCitationTarget {
   materialId?: string;
+  materialRevision?: number;
   locator: number;
 }
 
@@ -224,12 +225,13 @@ export function linkifyLocatorCitations(
   options: {
     maxLocator?: number;
     materialId?: string;
+    materialRevision?: number;
     allowedLocators?: Iterable<number>;
   } = {},
 ): string {
   const citations = findLocatorCitations(text);
   if (!citations.length) return text;
-  const { maxLocator, materialId } = options;
+  const { maxLocator, materialId, materialRevision } = options;
   const allowed = options.allowedLocators
     ? new Set(options.allowedLocators)
     : null;
@@ -253,8 +255,12 @@ export function linkifyLocatorCitations(
       continue;
     }
 
+    const revisionAddress =
+      Number.isSafeInteger(materialRevision) && Number(materialRevision) >= 1
+        ? `-revision-${materialRevision}`
+        : "";
     const href = materialId
-      ? `${MATERIAL_LOCATOR_HREF_PREFIX}${encodeURIComponent(materialId)}-locator-${locators[0]}`
+      ? `${MATERIAL_LOCATOR_HREF_PREFIX}${encodeURIComponent(materialId)}${revisionAddress}-locator-${locators[0]}`
       : `${LOCATOR_HREF_PREFIX}${locators[0]}`;
     const absorbed =
       locators.length === citation.locators.length
@@ -297,25 +303,33 @@ export function citationTargetFromHref(
     return Number.isInteger(locator) && locator >= 1 ? { locator } : null;
   }
   if (!href.startsWith(MATERIAL_LOCATOR_HREF_PREFIX)) return null;
-  const match = /^#dt-material-(.+)-locator-(\d+)$/.exec(href);
+  const match =
+    /^#dt-material-([0-9a-f]{8,64})(?:-revision-(\d+))?-locator-(\d+)$/i.exec(
+      href,
+    );
   if (!match) return null;
-  const locator = Number(match[2]);
-  let materialId = "";
-  try {
-    materialId = decodeURIComponent(match[1]);
-  } catch {
+  const materialRevision = match[2] ? Number(match[2]) : undefined;
+  const locator = Number(match[3]);
+  const materialId = match[1];
+  if (!Number.isSafeInteger(locator) || locator < 1) return null;
+  if (
+    materialRevision !== undefined &&
+    (!Number.isSafeInteger(materialRevision) || materialRevision < 1)
+  ) {
     return null;
   }
-  if (!/^[0-9a-f]{8,64}$/i.test(materialId)) return null;
-  return Number.isInteger(locator) && locator >= 1
-    ? { materialId: materialId.toLowerCase(), locator }
-    : null;
+  return {
+    materialId: materialId.toLowerCase(),
+    ...(materialRevision !== undefined ? { materialRevision } : {}),
+    locator,
+  };
 }
 
 /** Locators grounded by successful reading-tool results for one turn. */
 export function verifiedReadingLocators(
   events: ReadingEvidenceEvent[] | null | undefined,
   materialId: string | null | undefined,
+  materialRevision?: number | null,
 ): Set<number> {
   const verified = new Set<number>();
   if (!materialId) return verified;
@@ -331,6 +345,10 @@ export function verifiedReadingLocators(
     if (!nested || typeof nested !== "object") continue;
     const metadata = nested as Record<string, unknown>;
     if (String(metadata.material_id ?? "").toLowerCase() !== expected) continue;
+    if (materialRevision) {
+      const evidenceRevision = Number(metadata.material_revision);
+      if (evidenceRevision !== materialRevision) continue;
+    }
     const add = (value: unknown) => {
       const locator = Number(value);
       if (Number.isInteger(locator) && locator >= 1) verified.add(locator);

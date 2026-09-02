@@ -12,6 +12,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
+  BookMarked,
   BookOpen,
   Bot,
   Brain,
@@ -28,7 +29,6 @@ import {
   Square,
   UserRound,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import {
   ATTACHMENT_ACCEPT,
@@ -43,11 +43,12 @@ import type { StudyCourse } from "@/lib/courses-api";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
 import type { SelectedRecord } from "@/lib/notebook-selection-types";
-import type { LLMSelection } from "@/lib/unified-ws";
+import type { LLMSelection } from "@/features/chat/model/protocol";
 import type { LLMOption } from "@/lib/llm-options";
 import ChatSpaceMenu from "@/components/chat/space/ChatSpaceMenu";
 import type { SpaceMemoryFile } from "@/lib/space-items";
 import type { SelectedBookReference } from "@/lib/book-references";
+import type { SelectedReadingReference } from "@/lib/reading-references";
 import AgentSelector from "./AgentSelector";
 import ContextBudgetChip, { type ContextBudget } from "./ContextBudgetChip";
 import KnowledgeSelector from "./KnowledgeSelector";
@@ -60,6 +61,7 @@ type SpaceSelectionCounts = {
   chatHistory: number;
   myAgents: number;
   books: number;
+  reading: number;
   notebooks: number;
   questionBank: number;
   persona: number;
@@ -70,6 +72,7 @@ import ContextReferenceTree, {
 } from "./ContextReferenceTree";
 import { ComposerInput, type ComposerInputHandle } from "./ComposerInput";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import type { CapabilityDef } from "@/features/capabilities/presentation";
 
 interface PendingAttachment {
   type: string;
@@ -82,24 +85,6 @@ interface PendingAttachment {
 
 interface KnowledgeBase {
   name: string;
-}
-
-/**
- * The picker's view of a capability. The authoritative list — including
- * `defaultTools` and the prose — lives with the capabilities themselves in
- * `app/(workspace)/home/[[...sessionId]]/page.tsx`; this is the subset the
- * composer renders, so the two must stay in step.
- */
-export interface CapabilityDef {
-  value: string;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-  allowedTools: string[];
-  /** Collapse into the "More" flyout instead of listing directly. */
-  secondary?: boolean;
-  /** Still resolvable for existing sessions, but never offered as a new one. */
-  legacy?: boolean;
 }
 
 /** One row in the capability picker — shared by the built-in list and the
@@ -213,6 +198,7 @@ export default memo(function ChatComposer({
   contextBudget = null,
   selectedNotebookRecords,
   selectedBookReferences,
+  selectedReadingReferences = [],
   selectedHistorySessions,
   selectedAgentSessions,
   selectedQuestionEntries,
@@ -233,6 +219,7 @@ export default memo(function ChatComposer({
   onSelectLLM,
   onSelectNotebookPicker,
   onSelectBookPicker,
+  onSelectReadingPicker,
   onSelectHistoryPicker,
   onSelectAgentsPicker,
   onSelectQuestionBankPicker,
@@ -251,6 +238,7 @@ export default memo(function ChatComposer({
   onRemoveHistory,
   onRemoveAgent,
   onRemoveBookReference,
+  onRemoveReadingReference,
   onRemoveNotebook,
   onRemoveQuestion,
   onDragEnter,
@@ -308,6 +296,7 @@ export default memo(function ChatComposer({
   contextBudget?: ContextBudget | null;
   selectedNotebookRecords: SelectedRecord[];
   selectedBookReferences: SelectedBookReference[];
+  selectedReadingReferences?: SelectedReadingReference[];
   selectedHistorySessions: SelectedHistorySession[];
   selectedAgentSessions: SelectedHistorySession[];
   selectedQuestionEntries: SelectedQuestionEntry[];
@@ -343,6 +332,7 @@ export default memo(function ChatComposer({
   onSelectLLM: (selection: LLMSelection | null) => void;
   onSelectNotebookPicker: () => void;
   onSelectBookPicker: () => void;
+  onSelectReadingPicker?: () => void;
   onSelectHistoryPicker: () => void;
   onSelectAgentsPicker: () => void;
   onSelectQuestionBankPicker: () => void;
@@ -368,6 +358,7 @@ export default memo(function ChatComposer({
   onRemoveHistory: (sessionId: string) => void;
   onRemoveAgent: (sessionId: string) => void;
   onRemoveBookReference: (bookId: string) => void;
+  onRemoveReadingReference?: (materialId: string) => void;
   onRemoveNotebook: (notebookId: string) => void;
   onRemoveQuestion: (entryId: number) => void;
   onDragEnter: (event: React.DragEvent) => void;
@@ -503,7 +494,7 @@ export default memo(function ChatComposer({
       setMoreCapsOpen(false);
       onSelectCapability(value);
     },
-    [onSelectCapability],
+    [onSelectCapability, setMoreCapsOpen],
   );
 
   // Functional-update form keeps `handleInputChange` identity stable across
@@ -530,6 +521,7 @@ export default memo(function ChatComposer({
   const hasReferences =
     !!attachments.length ||
     !!selectedBookReferences.length ||
+    !!selectedReadingReferences.length ||
     !!selectedNotebookRecords.length ||
     !!selectedHistorySessions.length ||
     !!selectedAgentSessions.length ||
@@ -571,6 +563,10 @@ export default memo(function ChatComposer({
       (total, ref) => total + ref.pages.length,
       0,
     ),
+    reading: selectedReadingReferences.reduce(
+      (total, reference) => total + reference.units.length,
+      0,
+    ),
     notebooks: selectedNotebookRecords.length,
     questionBank: selectedQuestionEntries.length,
     persona: selectedPersona ? 1 : 0,
@@ -602,6 +598,17 @@ export default memo(function ChatComposer({
         kind: t("Book"),
         label: `${book.bookTitle} (${book.pages.length})`,
         onRemove: () => onRemoveBookReference(book.bookId),
+      }),
+    ),
+    ...selectedReadingReferences.map(
+      (material): ContextTreeItem => ({
+        key: `reading-${material.materialId}-r${material.revision}`,
+        icon: BookMarked,
+        kind: t("Reading"),
+        label: `${material.materialTitle} (${material.units.length})`,
+        onRemove: onRemoveReadingReference
+          ? () => onRemoveReadingReference(material.materialId)
+          : undefined,
       }),
     ),
     ...notebookReferenceGroups.map(
@@ -781,6 +788,7 @@ export default memo(function ChatComposer({
             agentsAvailable={agentsAvailable}
             onSelectNotebookPicker={onSelectNotebookPicker}
             onSelectBookPicker={onSelectBookPicker}
+            onSelectReadingPicker={onSelectReadingPicker}
             onSelectHistoryPicker={onSelectHistoryPicker}
             onSelectAgentsPicker={onSelectAgentsPicker}
             onSelectQuestionBankPicker={onSelectQuestionBankPicker}
@@ -936,7 +944,7 @@ export default memo(function ChatComposer({
                       className="dt-popup-up absolute bottom-full left-0 z-50 mb-1.5 w-[260px] overflow-visible rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1 shadow-lg backdrop-blur-md"
                     >
                       {capabilities
-                        .filter((cap) => !cap.secondary && !cap.legacy)
+                        .filter((cap) => !cap.secondary)
                         .map((cap) => (
                           <CapMenuItem
                             key={cap.value}
@@ -947,7 +955,7 @@ export default memo(function ChatComposer({
                         ))}
                       {(() => {
                         const loopCaps = capabilities.filter(
-                          (cap) => cap.secondary && !cap.legacy,
+                          (cap) => cap.secondary,
                         );
                         if (loopCaps.length === 0) return null;
                         const loopSelected = loopCaps.some(
@@ -1083,6 +1091,7 @@ export default memo(function ChatComposer({
                         knowledgeAvailable={false}
                         personaAvailable={!onPersonaSelectionChange}
                         agentsAvailable={agentsAvailable}
+                        readingAvailable={Boolean(onSelectReadingPicker)}
                         onSelectItem={(key) => {
                           onSetSpaceMenuOpen(false);
                           if (key === "attach") handlePickFiles();
@@ -1090,6 +1099,7 @@ export default memo(function ChatComposer({
                             onSelectHistoryPicker();
                           else if (key === "my_agents") onSelectAgentsPicker();
                           else if (key === "books") onSelectBookPicker();
+                          else if (key === "reading") onSelectReadingPicker?.();
                           else if (key === "notebooks")
                             onSelectNotebookPicker();
                           else if (key === "question_bank")

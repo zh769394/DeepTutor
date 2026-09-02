@@ -4,6 +4,7 @@ import {
   READING_WORKSPACE_MODE,
   getReadingTurnState,
   normalizeReadingMaterialId,
+  normalizeReadingMaterialRevision,
   readingTurnFields,
   resetReadingTurnState,
   setReadingMaterial,
@@ -23,12 +24,21 @@ test("normalizes persisted reading material ids and rejects unsafe values", () =
   assert.equal(normalizeReadingMaterialId(null), null);
 });
 
+test("normalizes immutable material revisions", () => {
+  assert.equal(normalizeReadingMaterialRevision(3), 3);
+  assert.equal(normalizeReadingMaterialRevision("4"), 4);
+  assert.equal(normalizeReadingMaterialRevision(0), null);
+  assert.equal(normalizeReadingMaterialRevision(1.5), null);
+  assert.equal(normalizeReadingMaterialRevision("nope"), null);
+});
+
 test("carries the document and viewport for every action inside reading", () => {
-  setReadingMaterial("d138eacaad029843");
+  setReadingMaterial("d138eacaad029843", 4);
   setReadingViewport({ locator: 3, selection: "attention" });
 
   assert.deepEqual(readingTurnFields(READING_WORKSPACE_MODE), {
     reading_material_id: "d138eacaad029843",
+    reading_material_revision: 4,
     reading_viewport: { locator: 3, selection: "attention" },
   });
 });
@@ -86,6 +96,7 @@ test("closing the document clears its viewport too", () => {
   assert.deepEqual(getReadingTurnState(), {
     workspaceId: null,
     materialId: null,
+    materialRevision: null,
     locator: 0,
     selection: "",
     timeSeconds: null,
@@ -106,6 +117,7 @@ test("carries the private workspace and clears it independently", () => {
   assert.deepEqual(getReadingTurnState(), {
     workspaceId: null,
     materialId: null,
+    materialRevision: null,
     locator: 0,
     selection: "",
     timeSeconds: null,

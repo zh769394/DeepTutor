@@ -439,11 +439,24 @@ class ReadingCatalogStore:
         self._validate_id(material_id, "material")
         return self.collections_for_materials([material_id])[material_id]
 
-    def library_counts(self) -> dict[str, object]:
-        """Counts for the complete material library, independent of page filters."""
+    def library_counts(
+        self,
+        material_ids: Sequence[str] | None = None,
+    ) -> dict[str, object]:
+        """Counts for the visible material library, independent of page filters."""
+        params: list[str] = []
+        where = ""
+        if material_ids is not None:
+            ids = tuple(dict.fromkeys(str(item) for item in material_ids if str(item)))
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                where = f"WHERE material_id IN ({placeholders})"
+                params.extend(ids)
+            else:
+                where = "WHERE 0"
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT
+                f"""SELECT
                        COUNT(*) AS all_count,
                        COALESCE(SUM(NOT EXISTS (
                            SELECT 1 FROM reading_workspace_materials wm
@@ -465,7 +478,9 @@ class ReadingCatalogStore:
                            WHEN render_mode NOT IN ('video', 'audio') AND source_kind = 'file'
                            THEN 1 ELSE 0
                        END), 0) AS document_count
-                   FROM reading_materials"""
+                   FROM reading_materials
+                   {where}""",  # nosec B608 - only placeholder shape is interpolated
+                params,
             ).fetchone()
         assert row is not None
         return {

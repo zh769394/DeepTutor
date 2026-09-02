@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Check,
   ChevronRight,
+  Database,
   ExternalLink,
   FolderSearch,
   Link2,
@@ -22,12 +23,16 @@ import {
   getLlamaIndexConfig,
   getPageIndexConfig,
   probeLightRagServer,
-  probeLinkedFolder,
-  type KnowledgeUploadPolicy,
   type LightRagServerProbe,
+} from "@/features/knowledge/api/engines";
+import {
+  probeLinkedFolder,
+  probeWeKnora,
+  type KnowledgeUploadPolicy,
   type LinkedFolderProbe,
   type RagProviderSummary,
-} from "@/lib/knowledge-api";
+  type WeKnoraProbe,
+} from "@/features/knowledge/api/catalog";
 import {
   createProviders,
   IMA_PROVIDER,
@@ -44,6 +49,7 @@ import KnowledgeEngineIcon from "./KnowledgeEngineIcon";
 const OBSIDIAN_SOURCE = "obsidian";
 const MARGINNOTE4_SOURCE = "marginnote4";
 const LIGHTRAG_SERVER_PROVIDER = "lightrag-server";
+const WEKNORA_PROVIDER = "weknora";
 const EXAMPLE_INDEX_PATH = "/Users/you/knowledge_bases/my-kb";
 const EXAMPLE_VAULT_PATH = "/Users/you/Documents/MyVault";
 const EXAMPLE_SERVER_URL = "http://localhost:9621";
@@ -80,6 +86,13 @@ interface CreateKbModalProps {
     apiKey?: string;
     mode?: string;
   }) => Promise<void>;
+  /** Connect a self-hosted WeKnora knowledge base (retrieval only). */
+  onConnectWeKnora: (params: {
+    name: string;
+    serverUrl: string;
+    apiKey: string;
+    knowledgeBaseId: string;
+  }) => Promise<void>;
   /** Connect a MarginNote 4 library (its Add-on pushes objects in; no index). */
   onConnectMarginNote4: (params: { name: string }) => Promise<void>;
   /** Connect a Tencent IMA knowledge base (retrieval only, no local index). */
@@ -106,6 +119,7 @@ export default function CreateKbModal({
   onConnectLinkedFolder,
   onConnectObsidian,
   onConnectLightRagServer,
+  onConnectWeKnora,
   onConnectMarginNote4,
   onConnectIma,
   onConfigureProvider,
@@ -140,6 +154,9 @@ export default function CreateKbModal({
     null,
   );
   const [serverProbing, setServerProbing] = useState(false);
+  const [weKnoraKnowledgeBaseId, setWeKnoraKnowledgeBaseId] = useState("");
+  const [weKnoraProbe, setWeKnoraProbe] = useState<WeKnoraProbe | null>(null);
+  const [weKnoraProbing, setWeKnoraProbing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const linkIsObsidian = linkSource === OBSIDIAN_SOURCE;
@@ -198,6 +215,9 @@ export default function CreateKbModal({
     setServerDefault(null);
     setServerProbe(null);
     setServerProbing(false);
+    setWeKnoraKnowledgeBaseId("");
+    setWeKnoraProbe(null);
+    setWeKnoraProbing(false);
   }, [isOpen, providers, firstLinkable, initialMode, initialSource]);
 
   useEffect(() => {
@@ -269,6 +289,11 @@ export default function CreateKbModal({
     setServerProbe(null);
   }, [serverUrl, apiKey]);
 
+  // A fresh URL, key, or remote KB id invalidates a stale WeKnora verdict.
+  useEffect(() => {
+    setWeKnoraProbe(null);
+  }, [serverUrl, apiKey, weKnoraKnowledgeBaseId]);
+
   // ---- New mode (build a fresh index) ----------------------------------
   const activeProvider = providers.find((p) => p.id === provider);
   const providerNeedsKey =
@@ -277,6 +302,7 @@ export default function CreateKbModal({
   const isPageIndexCloud = provider === "pageindex";
   const isPageIndexOSS = provider === "pageindex-oss";
   const isLightRagServer = provider === LIGHTRAG_SERVER_PROVIDER;
+  const isWeKnora = provider === WEKNORA_PROVIDER;
   const modeOptions = activeProvider?.modes ?? [];
 
   const policyForProvider = uploadPolicyForProvider(uploadPolicy, provider);
@@ -296,6 +322,14 @@ export default function CreateKbModal({
       if (isLightRagServer) {
         // The connection must pass the test before a KB is bound to it.
         return !!trimmedServerUrl && !!serverProbe?.ok;
+      }
+      if (isWeKnora) {
+        return (
+          !!trimmedServerUrl &&
+          !!apiKey.trim() &&
+          !!weKnoraKnowledgeBaseId.trim() &&
+          !!weKnoraProbe?.ok
+        );
       }
       return !providerUnavailable;
     }
@@ -345,6 +379,31 @@ export default function CreateKbModal({
     }
   };
 
+  const handleTestWeKnora = async () => {
+    if (
+      !trimmedServerUrl ||
+      !apiKey.trim() ||
+      !weKnoraKnowledgeBaseId.trim() ||
+      weKnoraProbing
+    ) {
+      return;
+    }
+    setWeKnoraProbing(true);
+    setError(null);
+    try {
+      const result = await probeWeKnora({
+        serverUrl: trimmedServerUrl,
+        apiKey: apiKey.trim(),
+        knowledgeBaseId: weKnoraKnowledgeBaseId.trim(),
+      });
+      setWeKnoraProbe(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWeKnoraProbing(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
@@ -357,6 +416,13 @@ export default function CreateKbModal({
             serverUrl: trimmedServerUrl,
             apiKey: apiKey.trim(),
             mode: retrievalMode,
+          });
+        } else if (isWeKnora) {
+          await onConnectWeKnora({
+            name: trimmed,
+            serverUrl: trimmedServerUrl,
+            apiKey: apiKey.trim(),
+            knowledgeBaseId: weKnoraKnowledgeBaseId.trim(),
           });
         } else {
           await onCreate({
@@ -398,7 +464,7 @@ export default function CreateKbModal({
 
   const submitLabel =
     mode === "new"
-      ? isLightRagServer
+      ? isLightRagServer || isWeKnora
         ? t("Connect")
         : t("Create")
       : linkIsObsidian || linkIsIma || linkIsMarginNote
@@ -432,7 +498,7 @@ export default function CreateKbModal({
           >
             {submitting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : mode === "new" && !isLightRagServer ? (
+            ) : mode === "new" && !isLightRagServer && !isWeKnora ? (
               <Plus size={14} />
             ) : (
               <Link2 size={14} />
@@ -503,6 +569,20 @@ export default function CreateKbModal({
                   probing={serverProbing}
                   probe={serverProbe}
                   onTest={handleTestServer}
+                  t={t}
+                />
+              ) : isWeKnora ? (
+                <WeKnoraFields
+                  serverUrl={serverUrl}
+                  setServerUrl={setServerUrl}
+                  apiKey={apiKey}
+                  setApiKey={setApiKey}
+                  knowledgeBaseId={weKnoraKnowledgeBaseId}
+                  setKnowledgeBaseId={setWeKnoraKnowledgeBaseId}
+                  submitting={submitting}
+                  probing={weKnoraProbing}
+                  probe={weKnoraProbe}
+                  onTest={handleTestWeKnora}
                   t={t}
                 />
               ) : null
@@ -1011,6 +1091,139 @@ function ServerProbeVerdict({
         <span>
           {probe.auth_required ? t("API key accepted") : t("Open access")}
         </span>
+      </div>
+    </div>
+  );
+}
+
+function WeKnoraFields({
+  serverUrl,
+  setServerUrl,
+  apiKey,
+  setApiKey,
+  knowledgeBaseId,
+  setKnowledgeBaseId,
+  submitting,
+  probing,
+  probe,
+  onTest,
+  t,
+}: {
+  serverUrl: string;
+  setServerUrl: (value: string) => void;
+  apiKey: string;
+  setApiKey: (value: string) => void;
+  knowledgeBaseId: string;
+  setKnowledgeBaseId: (value: string) => void;
+  submitting: boolean;
+  probing: boolean;
+  probe: WeKnoraProbe | null;
+  onTest: () => void;
+  t: TFn;
+}) {
+  const testDisabled =
+    submitting ||
+    probing ||
+    serverUrl.trim().length === 0 ||
+    apiKey.trim().length === 0 ||
+    knowledgeBaseId.trim().length === 0;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+          {t("Server URL")}
+        </label>
+        <div className="flex gap-2">
+          <input
+            value={serverUrl}
+            onChange={(event) => setServerUrl(event.target.value)}
+            disabled={submitting}
+            placeholder={EXAMPLE_SERVER_URL}
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-[12.5px] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--foreground)]/25 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={testDisabled}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 text-[12px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {probing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Server className="h-3.5 w-3.5" />
+            )}
+            {t("Test connection")}
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+          {t(
+            "The base URL of your self-hosted WeKnora deployment. Documents remain there; DeepTutor only runs retrieval searches.",
+          )}
+        </p>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+          {t("WeKnora API key")}
+        </label>
+        <input
+          value={apiKey}
+          onChange={(event) => setApiKey(event.target.value)}
+          disabled={submitting}
+          type="password"
+          autoComplete="off"
+          placeholder={t("Required to access your WeKnora knowledge base")}
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-[12.5px] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--foreground)]/25 disabled:opacity-50"
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+          {t("WeKnora knowledge base ID")}
+        </label>
+        <div className="relative">
+          <Database className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          <input
+            value={knowledgeBaseId}
+            onChange={(event) => setKnowledgeBaseId(event.target.value)}
+            disabled={submitting}
+            placeholder={t("WeKnora knowledge base ID")}
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] py-2 pl-9 pr-3 font-mono text-[12.5px] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--foreground)]/25 disabled:opacity-50"
+          />
+        </div>
+      </div>
+
+      {probe && <WeKnoraProbeVerdict probe={probe} t={t} />}
+    </div>
+  );
+}
+
+function WeKnoraProbeVerdict({ probe, t }: { probe: WeKnoraProbe; t: TFn }) {
+  if (!probe.ok) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+        <span className="flex items-center gap-1.5 font-medium">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          {t("Could not connect")}
+        </span>
+        {probe.error && <p className="mt-1 leading-relaxed">{probe.error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1 rounded-lg border border-[var(--border)] bg-[var(--muted)]/40 px-3 py-2.5 text-[12px]">
+      <div className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-300">
+        <Check className="h-3.5 w-3.5 shrink-0" />
+        {t("Connected to WeKnora")}
+      </div>
+      <div className="text-[11.5px] text-[var(--muted-foreground)]">
+        {probe.knowledge_base_name
+          ? t("Knowledge base {{name}}", {
+              name: probe.knowledge_base_name,
+            })
+          : probe.knowledge_base_id}
       </div>
     </div>
   );

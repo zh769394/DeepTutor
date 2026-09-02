@@ -202,6 +202,7 @@ def _resolve_call_config(
             provider_mode=provider_mode,
             api_version=api_version,
             extra_headers=merged_headers,
+            wire_api=current.wire_api if current is not None else "auto",
             reasoning_effort=resolved_reasoning_effort,
         )
         return config, provider_spec
@@ -239,6 +240,7 @@ def _resolve_call_config(
             "provider_mode": provider_mode,
             "api_version": resolved_api_version,
             "extra_headers": merged_headers,
+            "wire_api": current.wire_api,
             "reasoning_effort": (
                 reasoning_effort if reasoning_effort is not None else current.reasoning_effort
             ),

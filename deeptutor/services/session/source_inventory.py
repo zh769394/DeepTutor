@@ -34,6 +34,7 @@ import hashlib
 import logging
 from typing import Any, Sequence
 
+from deeptutor.reading.references import resolve_reading_sources
 from deeptutor.services.session.protocol import SessionStoreProtocol
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ class SourceEntry:
     """One row in the per-turn Attached Sources manifest."""
 
     sid: str
-    kind: str  # notebook | book | history | partner_group | question | attachment
+    kind: str  # notebook | book | reading | history | partner_group | question | attachment
     name: str
     full_text: str
     fresh: bool
@@ -119,6 +120,7 @@ async def build_inventory(
     fresh_history_session_ids: Sequence[Any],
     fresh_question_entry_ids: Sequence[Any],
     fresh_partner_group_references: Sequence[Any] = (),
+    fresh_reading_references: Sequence[dict[str, Any]] = (),
     language: str = "en",
 ) -> SourceInventory:
     """Compose the session-cumulative inventory for one chat turn.
@@ -138,6 +140,7 @@ async def build_inventory(
         notebook_records=fresh_notebook_records,
         book_context_text=fresh_book_context_text,
         book_references=fresh_book_references,
+        reading_references=fresh_reading_references,
     )
     # History + question entries are async (per-id store fetches), keep them
     # in a separate phase so the sync fresh additions don't block.
@@ -247,6 +250,7 @@ def _add_fresh(
     notebook_records: Sequence[dict[str, Any]],
     book_context_text: str,
     book_references: Sequence[dict[str, Any]],
+    reading_references: Sequence[dict[str, Any]],
 ) -> None:
     """Add the synchronously-available fresh sources (notebook records,
     book pages, attachments)."""
@@ -285,6 +289,13 @@ def _add_fresh(
                 first_seen_turn=current_turn_ordinal,
             )
         )
+
+    _add_reading_sources(
+        inv,
+        references=reading_references,
+        fresh=True,
+        turn_ordinal=current_turn_ordinal,
+    )
 
     for record in attachment_records:
         if str(record.get("type", "")).lower() == "image":
@@ -514,6 +525,13 @@ async def _collect_from_user_message(
             )
         )
 
+    _add_reading_sources(
+        inv,
+        references=snap.get("readingReferences") or [],
+        fresh=False,
+        turn_ordinal=turn_ordinal,
+    )
+
     # History sessions — async, one store fetch per id.
     for raw in snap.get("historyReferences") or []:
         hs_id = str(raw or "").strip()
@@ -624,6 +642,35 @@ async def _load_lineage(
 
 
 # ----- Per-type resolvers shared by fresh + historical paths --------------
+
+
+def _add_reading_sources(
+    inv: SourceInventory,
+    *,
+    references: Sequence[dict[str, Any]],
+    fresh: bool,
+    turn_ordinal: int,
+) -> None:
+    """Resolve reading locators from the active user's store.
+
+    Persisted chat metadata never supplies source text. Re-resolution here
+    preserves user isolation and makes a deleted material disappear from later
+    turns instead of leaving a stale or spoofable copy in session metadata.
+    """
+
+    for source in resolve_reading_sources(list(references)):
+        if source.source_id in inv and not fresh:
+            continue
+        inv.add(
+            SourceEntry(
+                sid=source.source_id,
+                kind="reading",
+                name=source.name,
+                full_text=source.full_text,
+                fresh=fresh,
+                first_seen_turn=turn_ordinal,
+            )
+        )
 
 
 def _split_book_sections(book_context_text: str) -> list[str]:

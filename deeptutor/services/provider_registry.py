@@ -10,7 +10,7 @@ Order matters — it controls match priority and fallback. Gateways first.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic.alias_generators import to_snake
 
@@ -74,6 +74,11 @@ class ProviderSpec:
     @property
     def auth_mode(self) -> str:
         return "oauth" if self.is_oauth else "api_key"
+
+    @property
+    def supports_wire_api_selection(self) -> bool:
+        """Whether profiles may select an OpenAI wire protocol explicitly."""
+        return self.backend == "openai_compat" and not self.is_oauth
 
     @property
     def label(self) -> str:
@@ -520,6 +525,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
 
 NANOBOT_LLM_PROVIDERS: tuple[str, ...] = tuple(spec.name for spec in PROVIDERS)
 
+WireAPI = Literal["auto", "responses", "chat_completions"]
+WIRE_API_VALUES: frozenset[str] = frozenset({"auto", "responses", "chat_completions"})
+
 
 def find_by_name(name: str | None) -> ProviderSpec | None:
     canonical = canonical_provider_name(name)
@@ -529,6 +537,23 @@ def find_by_name(name: str | None) -> ProviderSpec | None:
         if spec.name == canonical:
             return spec
     return None
+
+
+def normalize_wire_api(value: Any) -> WireAPI:
+    """Normalize untrusted catalog values to a supported wire protocol."""
+    normalized = str(value or "auto").strip().lower()
+    return normalized if normalized in WIRE_API_VALUES else "auto"  # type: ignore[return-value]
+
+
+def wire_api_for_provider(
+    value: Any,
+    provider: ProviderSpec | str | None,
+) -> WireAPI:
+    """Return a protocol override only for OpenAI-compatible backends."""
+    spec = find_by_name(provider) if isinstance(provider, str) else provider
+    if spec is None or not spec.supports_wire_api_selection:
+        return "auto"
+    return normalize_wire_api(value)
 
 
 def find_by_model(model: str | None) -> ProviderSpec | None:
@@ -632,9 +657,13 @@ __all__ = [
     "PROVIDERS",
     "NANOBOT_LLM_PROVIDERS",
     "PROVIDER_ALIASES",
+    "WIRE_API_VALUES",
+    "WireAPI",
     "canonical_provider_name",
     "find_by_name",
     "find_by_model",
     "find_gateway",
+    "normalize_wire_api",
     "strip_provider_prefix",
+    "wire_api_for_provider",
 ]

@@ -29,7 +29,10 @@ import type {
   SessionSummary,
 } from "@/lib/session-api";
 import { organizeSessionTree } from "@/lib/session-organization";
-import { isPlaceholderSessionTitle } from "@/lib/session-title";
+import {
+  displaySessionTitle,
+  isPlaceholderSessionTitle,
+} from "@/lib/session-title";
 import { useDragSort } from "@/hooks/useDragSort";
 import { placeMenu, type FloatingMenuPosition } from "@/lib/floating-menu";
 import {
@@ -92,6 +95,9 @@ export default function OrganizedSessionList({
   scrollRef,
 }: OrganizedSessionListProps) {
   const { t } = useTranslation();
+  // Backend writes the English sentinel "New conversation" until the LLM
+  // title lands; mirror SessionList by showing a localized, breathing label.
+  const placeholderLabel = t("New chat");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -375,16 +381,19 @@ export default function OrganizedSessionList({
               }}
               className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-0.5 text-[12px] outline-none focus:border-[var(--ring)]"
             />
+          ) : isPlaceholderSessionTitle(session.title) ? (
+            <span
+              className="dt-breathing-text min-w-0 flex-1 truncate text-[12.5px] italic text-[var(--muted-foreground)]"
+              title={placeholderLabel}
+            >
+              {displaySessionTitle(session.title, placeholderLabel)}
+            </span>
           ) : (
             <span
-              className={`min-w-0 flex-1 truncate text-[12.5px] ${
-                isPlaceholderSessionTitle(session.title)
-                  ? "italic opacity-70"
-                  : ""
-              }`}
+              className="min-w-0 flex-1 truncate text-[12.5px]"
               title={session.title}
             >
-              {session.title || t("New chat")}
+              {displaySessionTitle(session.title, placeholderLabel)}
             </span>
           )}
           {pinned ? <Pin size={10} className="shrink-0 opacity-55" /> : null}

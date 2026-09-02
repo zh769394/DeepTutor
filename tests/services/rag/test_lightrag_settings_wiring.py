@@ -26,6 +26,7 @@ def _stub_build(monkeypatch) -> None:
     monkeypatch.setattr(engine, "_controlled_class", lambda: _NativeLightRag)
     monkeypatch.setattr(engine, "build_llm_model_func", lambda **_kwargs: "llm")
     monkeypatch.setattr(engine, "build_embedding_func", lambda **_kwargs: "embedding")
+    monkeypatch.setattr(engine, "lightrag_llm_selection_from_settings", lambda: None)
 
 
 def test_native_constructor_receives_every_supported_knob(monkeypatch, tmp_path: Path) -> None:
@@ -51,6 +52,34 @@ def test_native_constructor_receives_every_supported_knob(monkeypatch, tmp_path:
     assert rag.kwargs["entity_extract_max_gleaning"] == 2
     assert rag.kwargs["vlm_process_enable"] is False
     assert "role_llm_configs" not in rag.kwargs
+
+
+def test_dedicated_selection_reaches_llm_but_not_embedding_adapter(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_build(monkeypatch)
+    selection = {"profile_id": "profile-1", "model_id": "model-1"}
+    monkeypatch.setattr(engine, "lightrag_llm_selection_from_settings", lambda: selection)
+    llm_calls: list[dict[str, object]] = []
+    embedding_calls: list[dict[str, object]] = []
+
+    def build_llm(**kwargs):
+        llm_calls.append(kwargs)
+        return "llm"
+
+    def build_embedding(**kwargs):
+        embedding_calls.append(kwargs)
+        return "embedding"
+
+    monkeypatch.setattr(engine, "build_llm_model_func", build_llm)
+    monkeypatch.setattr(engine, "build_embedding_func", build_embedding)
+    monkeypatch.setattr(engine, "indexing_kwargs_from_settings", dict)
+    monkeypatch.setattr(engine, "constructor_kwargs_from_settings", dict)
+
+    engine.build_rag(tmp_path)
+
+    assert llm_calls == [{"llm_selection": selection}]
+    assert embedding_calls == [{}]
 
 
 def test_vlm_role_is_only_configured_when_enabled(monkeypatch, tmp_path: Path) -> None:

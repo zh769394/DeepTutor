@@ -439,6 +439,7 @@ def test_annotations_round_trip_with_generated_ids(store: ReadingStore, pdf_path
     )
 
     assert saved.annotation_id
+    assert saved.material_revision == manifest.revision
     stored = store.annotations(manifest.material_id)
     assert len(stored) == 1
     assert stored[0].rects[0].to_list() == [0.1, 0.2, 0.5, 0.25]
@@ -886,6 +887,24 @@ def test_markdown_export_lists_marks_in_locator_order(store: ReadingStore, pdf_p
     assert text.index("Page 1") < text.index("Page 3")
     assert "> Introduction" in text
     assert "first" in text
+
+
+def test_markdown_export_labels_saved_citations(store: ReadingStore, pdf_path: Path) -> None:
+    manifest = store.ingest(pdf_path)
+    store.save_annotation(
+        manifest.material_id,
+        Annotation(
+            annotation_id="",
+            locator=1,
+            kind="citation",
+            quote="Introduction",
+        ),
+    )
+
+    text = export_material(store, manifest.material_id, fmt="markdown").data.decode("utf-8")
+
+    assert "**Citation**" in text
+    assert "> Introduction" in text
 
 
 def test_markdown_export_handles_a_material_with_no_annotations(

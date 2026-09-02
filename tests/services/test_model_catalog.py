@@ -113,6 +113,51 @@ def test_load_recovers_invalid_catalog_with_defaults(tmp_path: Path):
     assert set(saved["services"]) == expected_services
 
 
+def test_load_normalizes_wire_api_to_supported_profile_backends(tmp_path: Path):
+    catalog_path = tmp_path / "model_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "services": {
+                    "llm": {
+                        "active_profile_id": "azure-profile",
+                        "active_model_id": "azure-model",
+                        "profiles": [
+                            {
+                                "id": "azure-profile",
+                                "name": "Azure",
+                                "binding": "azure_openai",
+                                "wire_api": "responses",
+                                "models": [
+                                    {
+                                        "id": "azure-model",
+                                        "name": "Deployment",
+                                        "model": "deployment-name",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "custom-profile",
+                                "name": "Custom",
+                                "binding": "custom",
+                                "wire_api": "unknown-protocol",
+                                "models": [],
+                            },
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = ModelCatalogService(path=catalog_path).load()
+    profiles = loaded["services"]["llm"]["profiles"]
+
+    assert profiles[0]["wire_api"] == "auto"
+    assert profiles[1]["wire_api"] == "auto"
+
+
 def _gemini_embedding_catalog(path: Path, model: str) -> Path:
     path.write_text(
         json.dumps(

@@ -83,6 +83,113 @@ def test_availability_checks_native_lightrag_module(monkeypatch) -> None:
     assert seen == ["lightrag"]
 
 
+def test_lightrag_llm_selection_requires_both_catalog_ids(monkeypatch) -> None:
+    settings_cases = [
+        ({}, None),
+        ({"llm_profile_id": "p", "llm_model_id": "m"}, {"profile_id": "p", "model_id": "m"}),
+        ({"llm_profile_id": "p", "llm_model_id": ""}, None),
+        ({"llm_profile_id": "", "llm_model_id": "m"}, None),
+    ]
+    for settings, expected in settings_cases:
+        monkeypatch.setattr(
+            "deeptutor.services.config.load_lightrag_settings",
+            lambda settings=settings: settings,
+        )
+        assert config.lightrag_llm_selection_from_settings() == expected
+
+
+def test_lightrag_llm_adapter_resolves_dedicated_catalog_selection(monkeypatch) -> None:
+    class Client:
+        def __init__(self, *, config, configure_env) -> None:
+            assert config is selected_config
+            assert configure_env is False
+
+        def get_model_func(self):
+            async def model_func(_prompt, **kwargs):
+                assert kwargs["max_retries"] == 0
+                return "ok"
+
+            return model_func
+
+    selected_config = object()
+    monkeypatch.setattr(
+        "deeptutor.services.model_selection.runtime.resolve_llm_config_for_selection",
+        lambda selection: selected_config,
+    )
+    monkeypatch.setattr("deeptutor.services.llm.client.LLMClient", Client)
+
+    adapter = config.build_llm_model_func(llm_selection={"profile_id": "p", "model_id": "m"})
+    assert asyncio.run(adapter("prompt")) == "ok"
+
+
+def test_lightrag_vision_adapter_resolves_dedicated_catalog_selection(monkeypatch) -> None:
+    class Client:
+        def __init__(self, *, config, configure_env) -> None:
+            assert config is selected_config
+            assert configure_env is False
+
+        def get_vision_model_func(self):
+            async def model_func(_prompt, **kwargs):
+                assert kwargs["allow_image_fallback"] is False
+                assert kwargs["image_data"] == "sentinel"
+                return "ok"
+
+            return model_func
+
+    selected_config = object()
+    monkeypatch.setattr(
+        "deeptutor.services.model_selection.runtime.resolve_llm_config_for_selection",
+        lambda selection: selected_config,
+    )
+    monkeypatch.setattr("deeptutor.services.llm.client.LLMClient", Client)
+
+    adapter = config.build_vision_model_func(llm_selection={"profile_id": "p", "model_id": "m"})
+    assert asyncio.run(adapter("prompt", image_inputs=[{"base64": "sentinel"}])) == "ok"
+
+
+def test_build_rag_keeps_dedicated_llm_selection_out_of_embedding_kwargs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The 1.6 native adapter must not pass LLM-only kwargs to embedding."""
+
+    class NativeLightRag:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    fake_lightrag = types.ModuleType("lightrag")
+    fake_lightrag.__path__ = []  # type: ignore[attr-defined]
+    fake_roles = types.ModuleType("lightrag.llm_roles")
+    fake_roles.RoleLLMConfig = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lightrag", fake_lightrag)
+    monkeypatch.setitem(sys.modules, "lightrag.llm_roles", fake_roles)
+    monkeypatch.setattr(engine, "_require_exact_version", lambda: None)
+    monkeypatch.setattr(engine, "_register_parser", lambda: None)
+    monkeypatch.setattr(engine, "_controlled_class", lambda: NativeLightRag)
+    monkeypatch.setattr(engine, "indexing_kwargs_from_settings", dict)
+    monkeypatch.setattr(engine, "constructor_kwargs_from_settings", dict)
+    selection = {"profile_id": "profile-1", "model_id": "model-1"}
+    monkeypatch.setattr(engine, "lightrag_llm_selection_from_settings", lambda: selection)
+    llm_calls: list[dict[str, object]] = []
+    embedding_calls: list[object] = []
+
+    def build_llm(**kwargs):
+        llm_calls.append(kwargs)
+        return "llm"
+
+    def build_embedding(*, io_bridge=None):
+        embedding_calls.append(io_bridge)
+        return "embedding"
+
+    monkeypatch.setattr(engine, "build_llm_model_func", build_llm)
+    monkeypatch.setattr(engine, "build_embedding_func", build_embedding)
+
+    rag = engine.build_rag(tmp_path)
+
+    assert llm_calls == [{"llm_selection": selection}]
+    assert embedding_calls == [None]
+    assert rag.kwargs["embedding_func"] == "embedding"
+
+
 @REQUIRES_LIGHTRAG
 def test_distribution_identity_is_exact_rc2() -> None:
     assert engine.installed_version() == "1.5.7rc2"

@@ -128,6 +128,83 @@ def test_services_deepseek_v4_pro_enables_thinking_by_default() -> None:
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
+def test_services_deepseek_replays_persisted_reasoning_content() -> None:
+    provider = ServicesOpenAICompatProvider.__new__(ServicesOpenAICompatProvider)
+    provider.default_model = "deepseek-v4-pro"
+    provider._spec = find_service_provider("deepseek")
+
+    kwargs = provider._build_kwargs(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "_provider_response_state": {"reasoning_content": "private reasoning"},
+            },
+            {"role": "user", "content": "next question"},
+        ],
+        tools=None,
+        model=None,
+        max_tokens=32,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    )
+
+    assistant_message = kwargs["messages"][0]
+    assert assistant_message["reasoning_content"] == "private reasoning"
+    assert "_provider_response_state" not in assistant_message
+
+
+def test_non_deepseek_drops_persisted_reasoning_content() -> None:
+    provider = ServicesOpenAICompatProvider.__new__(ServicesOpenAICompatProvider)
+    provider.default_model = "gpt-test"
+    provider._spec = find_service_provider("openai")
+
+    kwargs = provider._build_kwargs(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "_provider_response_state": {"reasoning_content": "private reasoning"},
+            }
+        ],
+        tools=None,
+        model="gpt-test",
+        max_tokens=32,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    )
+
+    assert "reasoning_content" not in kwargs["messages"][0]
+    assert "_provider_response_state" not in kwargs["messages"][0]
+
+
+def test_responses_body_replays_persisted_native_output_items() -> None:
+    provider = ServicesOpenAICompatProvider.__new__(ServicesOpenAICompatProvider)
+    provider.default_model = "gpt-test"
+    provider._spec = find_service_provider("openai")
+    native_items = [{"type": "reasoning", "id": "rs_1", "summary": []}]
+
+    body = provider._build_responses_body(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "previous answer",
+                "_provider_response_state": {"responses_output_items": native_items},
+            }
+        ],
+        tools=None,
+        model="gpt-test",
+        max_tokens=32,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    )
+
+    assert body["input"] == native_items
+
+
 def test_services_dashscope_minimal_reasoning_uses_enable_thinking_only() -> None:
     kwargs = _build_services_kwargs("dashscope", "minimal")
 

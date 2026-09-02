@@ -1,7 +1,9 @@
 "use client";
 
+import { browserStorage } from "@/shared/storage";
+
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   ChevronDown,
@@ -26,7 +28,7 @@ import { useTranslation } from "react-i18next";
 
 import type { JumpRequest } from "@/components/reading/PdfDocumentView";
 import { READER_ASK_EVENT, ReaderPane } from "@/components/reading/ReaderPane";
-import { useUnifiedChat } from "@/context/UnifiedChatContext";
+import { useChatStateAdapter } from "@/features/chat/ChatStateAdapter";
 import type { ReaderHeading } from "@/lib/reading-outline";
 import { setReadingViewport } from "@/lib/reading-turn-state";
 import { listNotebooks, type NotebookSummary } from "@/lib/notebook-api";
@@ -84,15 +86,16 @@ interface ReaderAskDetail {
 }
 
 export function ReadingWorkspacePage() {
-  const params = useParams<{ workspaceId: string; sessionId?: string[] }>();
+  const params = useParams<{ workspaceId: string; sessionId?: string }>();
   const workspaceId = params.workspaceId;
-  const sessionIdParam = params.sessionId?.[0] ?? null;
+  const sessionIdParam = params.sessionId?.trim() || null;
+  const courseId = useSearchParams().get("course")?.trim() ?? "";
   const router = useRouter();
   const { t } = useTranslation();
   // The shell only needs to *send* (guided one-click prompts). Rendering the
   // transcript, editing, branching and cancelling all belong to the companion,
   // which reads them off the same context.
-  const { state, sendMessage } = useUnifiedChat();
+  const { state, sendMessage } = useChatStateAdapter();
 
   const {
     workspace,
@@ -124,7 +127,7 @@ export function ReadingWorkspacePage() {
     buildMasteryPath,
     renameWorkspace,
     reportViewport,
-  } = useReadingWorkspace(workspaceId, sessionIdParam);
+  } = useReadingWorkspace(workspaceId, sessionIdParam, courseId);
 
   // View-only state: what the reader is pointing at and which panels are open.
   const [transcriptSearch, setTranscriptSearch] = useState("");
@@ -143,7 +146,7 @@ export function ReadingWorkspacePage() {
     if (typeof window === "undefined") return 380;
     try {
       const stored = Number(
-        window.localStorage.getItem("dt.reader.companionWidth"),
+        browserStorage.readRaw("local", "dt.reader.companionWidth"),
       );
       return Number.isFinite(stored) && stored >= 300 && stored <= 640
         ? stored
@@ -190,6 +193,8 @@ export function ReadingWorkspacePage() {
   const [headingJump, setHeadingJump] = useState<{
     id: string;
     nonce: number;
+    locator?: number;
+    sourceHref?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -257,7 +262,8 @@ export function ReadingWorkspacePage() {
         window.removeEventListener("pointerup", onUp);
         setCompanionWidth((current) => {
           try {
-            window.localStorage.setItem(
+            browserStorage.writeRaw(
+              "local",
               "dt.reader.companionWidth",
               String(current),
             );
@@ -527,6 +533,8 @@ export function ReadingWorkspacePage() {
             setHeadingJump((current) => ({
               id: heading.id,
               nonce: (current?.nonce ?? 0) + 1,
+              locator: heading.locator,
+              sourceHref: heading.sourceHref,
             }))
           }
           refs={material?.unit_refs ?? []}
@@ -587,6 +595,7 @@ export function ReadingWorkspacePage() {
           ) : (
             <div className="h-full [&>div]:border-r-0">
               <ReaderPane
+                sessionId={state.sessionId ?? sessionIdParam}
                 externalJump={documentJump}
                 onHeadingsChange={setPageHeadings}
                 onActiveHeadingChange={setActiveHeadingId}

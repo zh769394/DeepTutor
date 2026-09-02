@@ -30,10 +30,10 @@ import {
  *
  * This provider lives in the workspace layout, NOT inside the chat page, and
  * that placement is the whole point: sending the first message of a session
- * changes the URL from `/home` to `/home/<id>`, which remounts the page
+ * changes the URL from `/chat` to `/chat/<id>`, which remounts the page
  * component. State held inside the reader pane died with it, so the document
  * vanished the moment the user asked their first question. The layout persists
- * across that navigation — which is exactly why `UnifiedChatProvider` sits there
+ * across that navigation — which is exactly why the chat runtime sits there
  * too.
  *
  * The viewport (scroll position, selection) is deliberately NOT state: it
@@ -100,7 +100,10 @@ export function ReadingProvider({ children }: { children: ReactNode }) {
   // reads when it sends. One effect rather than writes scattered through the
   // mutators, so the two can never disagree.
   useEffect(() => {
-    setReadingMaterial(material?.material_id ?? null);
+    setReadingMaterial(
+      material?.material_id ?? null,
+      material?.revision ?? null,
+    );
   }, [material]);
 
   const openMaterial = useCallback(

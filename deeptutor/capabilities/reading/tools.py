@@ -301,7 +301,11 @@ class SearchMaterialTool(_ReadingToolBase):
                     f'No match for "{query}". Try fewer or different words, or '
                     f"call material_outline to see what the document covers."
                 ),
-                metadata={"material_id": material_id, "hits": []},
+                metadata={
+                    "material_id": material_id,
+                    "material_revision": manifest.revision,
+                    "hits": [],
+                },
             )
 
         lines = [
@@ -339,6 +343,7 @@ class SearchMaterialTool(_ReadingToolBase):
                 {
                     "type": "reading",
                     "material_id": material_id,
+                    "material_revision": manifest.revision,
                     "title": manifest.filename,
                     "page": hit.locator,
                     "content": hit.snippet,
@@ -347,6 +352,7 @@ class SearchMaterialTool(_ReadingToolBase):
             ],
             metadata={
                 "material_id": material_id,
+                "material_revision": manifest.revision,
                 "mode": result.mode,
                 "hits": [hit.to_dict() for hit in result.hits],
             },
@@ -400,7 +406,11 @@ class ReadMaterialTool(_ReadingToolBase):
                     f"Those {manifest.unit}s contain no extractable text "
                     "(they may be images or scans)."
                 ),
-                metadata={"material_id": material_id, "locators": list(rendered.locators)},
+                metadata={
+                    "material_id": material_id,
+                    "material_revision": manifest.revision,
+                    "locators": list(rendered.locators),
+                },
             )
         refs = {
             row.locator: row
@@ -432,6 +442,7 @@ class ReadMaterialTool(_ReadingToolBase):
                 {
                     "type": "reading",
                     "material_id": material_id,
+                    "material_revision": manifest.revision,
                     "title": manifest.filename,
                     "page": locator,
                 }
@@ -439,6 +450,7 @@ class ReadMaterialTool(_ReadingToolBase):
             ],
             metadata={
                 "material_id": material_id,
+                "material_revision": manifest.revision,
                 "locators": list(rendered.locators),
                 "truncated": rendered.truncated,
             },
@@ -649,6 +661,7 @@ def _goto_result(
         content=f"Reader moved to {manifest.unit} {locator}{note}.",
         metadata={
             "material_id": material_id,
+            "material_revision": manifest.revision,
             "reader_action": "goto",
             "locator": locator,
             "quote": quote,

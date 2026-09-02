@@ -11,7 +11,6 @@ from deeptutor.agents.chat.agentic_pipeline import AgenticChatPipeline
 from deeptutor.capabilities.mastery.capability import MasteryPathCapability
 from deeptutor.capabilities.mastery.loop import MasteryLoopCapability
 from deeptutor.core.context import UnifiedContext
-from deeptutor.core.stream_bus import StreamBus
 from deeptutor.learning.models import (
     InteractionStatus,
     KnowledgePoint,
@@ -22,6 +21,7 @@ from deeptutor.learning.models import (
 )
 from deeptutor.learning.service import LearningService
 from deeptutor.learning.storage import LearningStore
+from deeptutor.runtime.stream_bus import StreamBus
 
 
 def _use_store_root(monkeypatch, root: Path) -> None:
@@ -254,6 +254,49 @@ async def test_choice_composer_option_label_still_commits(tmp_path, monkeypatch)
     assert answered is not None
     assert answered.status == InteractionStatus.ANSWERED
     assert answered.user_answer == "选B"
+
+
+@pytest.mark.asyncio
+async def test_mastery_sync_carries_provenance_to_question_bank(tmp_path, monkeypatch) -> None:
+    from deeptutor.capabilities.mastery.tools import (
+        _sync_mastery_attempt_to_question_bank,
+    )
+    import deeptutor.services.session as session_package
+    from deeptutor.services.session.sqlite_store import SQLiteSessionStore
+
+    store = SQLiteSessionStore(db_path=tmp_path / "sessions.db")
+    monkeypatch.setattr(session_package, "get_sqlite_session_store", lambda: store)
+    await store.create_session(session_id="session-1", title="Mastery")
+    pending = PendingQuestion(
+        question_id="stable-question",
+        knowledge_point_id="kp-1",
+        prompt="Which colour?",
+        question_type="choice",
+        expected_answer="B",
+        options=["A: red", "B: blue"],
+    )
+
+    await _sync_mastery_attempt_to_question_bank(
+        path_id="path-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        pending=pending,
+        user_answer="A",
+        is_correct=False,
+        choice_options={"A": "red", "B": "blue"},
+        correct_answer="B",
+        material_title="Path A",
+        section_title="Primary colours",
+    )
+
+    entries = await store.list_notebook_entries(source="mastery_path")
+    assert entries["total"] == 1
+    entry = entries["items"][0]
+    assert entry["material_id"] == "path-1"
+    assert entry["material_title"] == "Path A"
+    assert entry["section_id"] == "kp-1"
+    assert entry["section_title"] == "Primary colours"
+    assert entry["resolved"] is False
 
 
 @pytest.mark.asyncio
@@ -517,7 +560,7 @@ async def test_a_switch_and_a_build_in_one_round_land_on_the_switched_path(tmp_p
     watched path A's map change instead. Driven through the real dispatcher so
     the ordering contract, not just the tool, is under test.
     """
-    from deeptutor.core.agentic.tool_dispatch import dispatch_tool_calls
+    from deeptutor.runtime.agentic.tool_dispatch import dispatch_tool_calls
 
     _use_store_root(monkeypatch, tmp_path)
     LearningStore().save(_built_path("path-a", name="Path A"))

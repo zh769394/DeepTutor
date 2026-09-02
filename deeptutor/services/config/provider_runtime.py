@@ -18,6 +18,7 @@ from deeptutor.services.provider_registry import (
     find_by_model,
     find_by_name,
     find_gateway,
+    wire_api_for_provider,
 )
 from deeptutor.services.videogen.config import VideogenConfig
 from deeptutor.services.voice.config import (
@@ -299,10 +300,16 @@ class VoiceProviderSpec:
     is_local: bool = False
 
 
-# Voice providers in the OpenAI-compatible cluster. A single adapter covers all
-# of these; bespoke providers (DashScope native, ElevenLabs, Gemini, Deepgram)
-# would register their own ``adapter`` value once implemented.
+# Voice providers either use the shared OpenAI-compatible adapter or a native
+# protocol adapter registered by name (currently DashScope TTS/STT).
 TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
+    "dashscope": VoiceProviderSpec(
+        label="Aliyun DashScope",
+        default_api_base="https://dashscope.aliyuncs.com/api/v1",
+        adapter="dashscope",
+        default_model="qwen3-tts-flash",
+        default_voice="Cherry",
+    ),
     "openai": VoiceProviderSpec(
         label="OpenAI",
         default_api_base="https://api.openai.com/v1",
@@ -351,6 +358,12 @@ TTS_PROVIDERS: dict[str, VoiceProviderSpec] = {
 }
 
 STT_PROVIDERS: dict[str, VoiceProviderSpec] = {
+    "dashscope": VoiceProviderSpec(
+        label="Aliyun DashScope",
+        default_api_base="https://dashscope.aliyuncs.com/api/v1",
+        adapter="dashscope",
+        default_model="paraformer-v2",
+    ),
     "openai": VoiceProviderSpec(
         label="OpenAI",
         default_api_base="https://api.openai.com/v1",
@@ -393,6 +406,8 @@ STT_PROVIDERS: dict[str, VoiceProviderSpec] = {
 
 # Provider-name aliases accepted from older/loose catalog values.
 VOICE_PROVIDER_ALIASES = {
+    "aliyun": "dashscope",
+    "bailian": "dashscope",
     "azure": "azure_openai",
     "aoai": "azure_openai",
     "openai_compatible": "custom",
@@ -429,6 +444,12 @@ class GenerationProviderSpec:
 # Image-generation providers in the OpenAI-compatible cluster. A single adapter
 # covers all of these; ``default_model`` is only a Settings prefill hint.
 IMAGEGEN_PROVIDERS: dict[str, GenerationProviderSpec] = {
+    "dashscope": GenerationProviderSpec(
+        label="Aliyun DashScope",
+        default_api_base="https://dashscope.aliyuncs.com/api/v1",
+        adapter="dashscope",
+        default_model="wanx2.1-t2i-turbo",
+    ),
     "openai": GenerationProviderSpec(
         label="OpenAI",
         default_api_base="https://api.openai.com/v1",
@@ -475,6 +496,12 @@ IMAGEGEN_PROVIDERS: dict[str, GenerationProviderSpec] = {
 # Video-generation providers. Text-to-video has no synchronous standard; these
 # all use the async-task adapter (submit → poll → download).
 VIDEOGEN_PROVIDERS: dict[str, GenerationProviderSpec] = {
+    "dashscope": GenerationProviderSpec(
+        label="Aliyun DashScope",
+        default_api_base="https://dashscope.aliyuncs.com/api/v1",
+        adapter="dashscope",
+        default_model="wanx2.1-t2v-turbo",
+    ),
     "volcengine": GenerationProviderSpec(
         label="Volcengine Ark (Seedance)",
         default_api_base="https://ark.cn-beijing.volces.com/api/v3",
@@ -491,6 +518,8 @@ VIDEOGEN_PROVIDERS: dict[str, GenerationProviderSpec] = {
 
 # Provider-name aliases accepted from older/loose catalog values.
 GENERATION_PROVIDER_ALIASES = {
+    "aliyun": "dashscope",
+    "bailian": "dashscope",
     "ark": "volcengine",
     "volces": "volcengine",
     "doubao": "volcengine",
@@ -535,6 +564,7 @@ class ResolvedLLMConfig:
     effective_url: str | None = None
     api_version: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
+    wire_api: str = "auto"
     reasoning_effort: str | None = None
     context_window: int | None = None
 
@@ -756,6 +786,7 @@ def resolve_llm_runtime_config(
     active_api_key = _as_api_key((profile or {}).get("api_key"))
     active_api_base = _as_str((profile or {}).get("base_url"))
     active_api_version = _as_str((profile or {}).get("api_version"))
+    configured_wire_api = _as_str((profile or {}).get("wire_api")) or "auto"
     reasoning_effort = _as_str((model or {}).get("reasoning_effort")) or None
     # Per-conversation override (#641): an explicit reasoning_effort on the
     # caller's LLMSelection takes precedence over the profile/model default
@@ -798,6 +829,7 @@ def resolve_llm_runtime_config(
         effective_url=api_base or None,
         api_version=api_version or None,
         extra_headers=extra_headers,
+        wire_api=wire_api_for_provider(configured_wire_api, spec),
         reasoning_effort=reasoning_effort,
         context_window=context_window,
     )

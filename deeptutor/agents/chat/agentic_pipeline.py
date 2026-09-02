@@ -19,24 +19,13 @@ from deeptutor.agents.chat.agent_loop import AgentLoop
 from deeptutor.agents.chat.context_budget import LLMRequestSnapshot, build_context_budget
 from deeptutor.agents.chat.prompt_blocks import ChatPromptAssembler
 from deeptutor.capabilities import (
-    LoopCapability,
+    LoopExtension,
     PromptBlock,
     active_loop_capabilities,
     any_exclusive_capability_active,
 )
 from deeptutor.capabilities.protocol import END_LOOP
-from deeptutor.core.agentic import (
-    DispatchOutcome,
-    LLMClientConfig,
-    UsageTracker,
-    build_completion_kwargs,
-    build_openai_client,
-    can_use_native_tool_calling,
-    dispatch_tool_calls,
-)
-from deeptutor.core.agentic.tool_dispatch import MAX_PARALLEL_TOOL_CALLS
 from deeptutor.core.context import UnifiedContext
-from deeptutor.core.stream_bus import StreamBus
 from deeptutor.core.tool_protocol import ToolLookup
 from deeptutor.core.trace import (
     build_trace_metadata,
@@ -45,10 +34,21 @@ from deeptutor.core.trace import (
     new_call_id,
 )
 from deeptutor.knowledge.manifest import KbManifest, render_manifest_note
+from deeptutor.runtime.agentic import (
+    DispatchOutcome,
+    LLMClientConfig,
+    UsageTracker,
+    build_completion_kwargs,
+    build_openai_client,
+    can_use_native_tool_calling,
+    dispatch_tool_calls,
+)
+from deeptutor.runtime.agentic.tool_dispatch import MAX_PARALLEL_TOOL_CALLS
 from deeptutor.runtime.providers import ToolScope
 from deeptutor.runtime.providers.view import ProviderToolView, build_tool_view
 from deeptutor.runtime.registry.deferred_tools import DeferredToolLoader
 from deeptutor.runtime.registry.tool_registry import get_tool_registry
+from deeptutor.runtime.stream_bus import StreamBus
 from deeptutor.services.cli_apps.models import TOOL_PREFIX as CLI_APP_TOOL_PREFIX
 from deeptutor.services.config import get_chat_params
 from deeptutor.services.llm import (
@@ -282,6 +282,7 @@ class AgenticChatPipeline:
             api_version=self.api_version,
             extra_headers=self.extra_headers or None,
             reasoning_effort=self.reasoning_effort,
+            wire_api=getattr(self.llm_config, "wire_api", None) or "auto",
         )
 
     @property
@@ -311,12 +312,12 @@ class AgenticChatPipeline:
 
         A capability that needs guaranteed loop headroom — the subagent
         capability, which must allow its full consult budget plus a finishing
-        round — sets ``context.metadata["_min_loop_rounds"]``; the loop honours
+        round — sets ``context.runtime.min_loop_rounds``; the loop honours
         the larger of that and the configured budget. A generic seam (like
         solve's ``solve_max_replans``) so the loop stays capability-agnostic.
         """
         try:
-            floor = int(context.metadata.get("_min_loop_rounds") or 0)
+            floor = int(context.runtime.min_loop_rounds or 0)
         except (TypeError, ValueError):
             floor = 0
         return max(self.max_rounds, floor)
@@ -418,7 +419,10 @@ class AgenticChatPipeline:
             role = item.get("role")
             content = item.get("content")
             if role in {"user", "assistant"} and isinstance(content, (str, list)):
-                messages.append({"role": role, "content": content})
+                message: dict[str, Any] = {"role": role, "content": content}
+                if role == "assistant" and isinstance(item.get("_provider_response_state"), dict):
+                    message["_provider_response_state"] = item["_provider_response_state"]
+                messages.append(message)
             elif role == "system" and isinstance(content, str) and content.strip():
                 # ContextBuilder emits the compressed-history summary as a
                 # leading system message; deliver it right after the system
@@ -664,7 +668,7 @@ class AgenticChatPipeline:
         )
         return _drop_unconfigured_generation_tools(composed)
 
-    def _active_loop_capabilities(self, context: UnifiedContext) -> tuple[LoopCapability, ...]:
+    def _active_loop_capabilities(self, context: UnifiedContext) -> tuple[LoopExtension, ...]:
         return active_loop_capabilities(context)
 
     @staticmethod
@@ -806,7 +810,7 @@ class AgenticChatPipeline:
 
         The hook is optional (read via ``getattr`` so plain capabilities are
         unaffected) and runs once before the answer loop's first LLM call —
-        see the ``pre_loop`` note on :class:`LoopCapability`. Failures are
+        see the ``pre_loop`` note on :class:`LoopExtension`. Failures are
         swallowed: a pre-pass is best-effort grounding and must never sink the
         turn.
         """
@@ -927,7 +931,7 @@ class AgenticChatPipeline:
         stream: StreamBus | None = None,
         retrieve_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        from deeptutor.core.agentic import execute_tool_call
+        from deeptutor.runtime.agentic import execute_tool_call
 
         stream = stream or StreamBus()
         return await execute_tool_call(
@@ -1032,7 +1036,7 @@ class AgenticChatPipeline:
     ) -> bool:
         ask_user = (dispatch.pause_payload or {}).get("ask_user") or {}
         await self._notify_pause_hooks(context, "on_user_pause", context, ask_user)
-        waiter = context.metadata.get("wait_for_user_reply")
+        waiter = context.runtime.wait_for_user_reply
         if not callable(waiter):
             await self._emit_terminator_final_response(
                 stream,
@@ -1076,7 +1080,7 @@ class AgenticChatPipeline:
         # Neutral stop signal for loop plugins (e.g. a crisis redirect): the
         # outer capability owns the final message, so skip further LLM rounds.
         # Everything below only exists to feed the answer back to the model.
-        if context.metadata.get(END_LOOP):
+        if context.interaction.end_loop or context.metadata.get(END_LOOP):
             return False
 
         body_text = _format_user_reply_body(
@@ -1137,7 +1141,7 @@ class AgenticChatPipeline:
             # A CLI app runs like exec, and for the same reason gets its workdir
             # from here rather than choosing one: one directory per turn shared by
             # every app, so the model can render with one and post-process with
-            # another, and the files land where /api/outputs will serve them
+            # another, and the files land where /files/outputs will serve them
             # (``PathService.is_public_output_path`` has the matching branch).
             from deeptutor.services.sandbox import Mount
 
@@ -1162,7 +1166,7 @@ class AgenticChatPipeline:
                 )
         elif tool_name in ("imagegen", "videogen"):
             # Generated media lands in the turn's public workspace so it
-            # surfaces as a download card via /api/outputs (same convention as
+            # surfaces as a download card via /files/outputs (same convention as
             # exec/code_execution artifacts).
             media_dir = task_dir / "media" if task_dir is not None else None
             if media_dir is not None:
@@ -1726,10 +1730,14 @@ class AgenticChatPipeline:
         if self.language == "zh":
             how_to_write = (
                 (
-                    "通过 exec 使用 PowerShell here-string 将脚本写入文件再运行，例如：\n"
+                    "当前 shell 是 Windows PowerShell。列目录使用 Get-ChildItem，限制输出使用 "
+                    "Select-Object -First；连续命令使用分号。`python` 与 `python -m pip` 均指向 "
+                    "DeepTutor 自己的运行环境。通过 exec 使用 PowerShell here-string 将脚本写入文件再运行，例如：\n"
                     "  @'\n...Python 脚本内容...\n'@ | Set-Content -Encoding utf8 gen.py\n"
                     "  python gen.py\n"
-                    "不要使用 bash heredoc（<<'PY'）或 POSIX 重定向语法——当前为 Windows 环境。"
+                    "本地路径经 Test-Path 或 Get-Item 验证存在后，直接读取，不要要求用户重复上传。"
+                    "命令失败时先根据 STDERR 与退出码修正命令或依赖；只有工具明确返回拒绝访问时，"
+                    "才能判断为权限问题。不要把命令语法或依赖错误说成沙箱无权访问。"
                 )
                 if is_windows
                 else (
@@ -1747,12 +1755,17 @@ class AgenticChatPipeline:
             )
         how_to_write = (
             (
-                "write the script to a file through exec with a PowerShell "
+                "the current shell is Windows PowerShell. Use Get-ChildItem to list files, "
+                "Select-Object -First to limit output, and semicolons between commands. "
+                "Both `python` and `python -m pip` resolve to DeepTutor's runtime. "
+                "Write the script to a file through exec with a PowerShell "
                 "here-string, then run it, for example:\n"
                 "  @'\n...Python script contents...\n'@ | Set-Content -Encoding utf8 gen.py\n"
                 "  python gen.py\n"
-                "Do not use Bash heredoc (<<'PY') or POSIX redirection syntax; "
-                "this is a Windows environment. "
+                "After Test-Path or Get-Item confirms a local path, read it directly instead "
+                "of asking the user to upload it again. Correct the command or dependency from "
+                "STDERR and the exit code first. Do not describe a syntax or dependency failure "
+                "as denied sandbox access unless the tool explicitly reports access denied. "
             )
             if is_windows
             else (

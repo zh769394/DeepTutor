@@ -3,21 +3,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Check,
+  Captions,
   ExternalLink,
   Loader2,
+  Pencil,
   Play,
   RotateCcw,
+  StickyNote,
+  Trash2,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { useWatching } from "@/context/WatchingContext";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { PlayerController } from "@/lib/video-player-controller";
-import { saveVideoProgress } from "@/lib/video-learning-api";
+import {
+  createVideoNote,
+  deleteVideoNote,
+  listVideoNotes,
+  saveVideoProgress,
+  updateVideoNote,
+  type VideoNote,
+} from "@/lib/video-learning-api";
 import { videoTimeFromHref } from "@/lib/watching-citations";
 import { WatchingPlayer } from "./WatchingPlayer";
 
 export const WATCHING_ASK_EVENT = "dt:watching-ask";
+
+type WatchTab = "transcript" | "notes";
 
 export function WatchingPane({ onClose }: { onClose(): void }) {
   const { t } = useTranslation();
@@ -28,18 +43,31 @@ export function WatchingPane({ onClose }: { onClose(): void }) {
     lastUrl,
     openUrl,
     refresh,
+    refreshTranscript,
     close,
     reportTime,
     clearError,
     setActive,
   } = useWatching();
+  const materialId = material?.material_id ?? null;
   const [input, setInput] = useState("");
   const [playerError, setPlayerError] = useState<string | null>(null);
+  const [tab, setTab] = useState<WatchTab>("transcript");
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [notes, setNotes] = useState<VideoNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const controllerRef = useRef<PlayerController | null>(null);
+  const activeMaterialIdRef = useRef(materialId);
   const lastSavedRef = useRef(0);
   const stateRef = useRef({ time: 0, duration: 0 });
+  activeMaterialIdRef.current = materialId;
 
   useEffect(() => {
     setActive(true);
@@ -130,6 +158,131 @@ export function WatchingPane({ onClose }: { onClose(): void }) {
     );
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    setNotes([]);
+    setNotesError(null);
+    setNoteDraft("");
+    setEditingNoteId(null);
+    setEditingDraft("");
+    setPendingDeleteId(null);
+    if (!materialId) {
+      setNotesLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setNotesLoading(true);
+    void (async () => {
+      try {
+        const loaded = await listVideoNotes(materialId);
+        if (!cancelled) setNotes(loaded);
+      } catch (caught) {
+        if (!cancelled) {
+          setNotesError(
+            caught instanceof Error
+              ? caught.message
+              : t("Notes could not be loaded."),
+          );
+        }
+      } finally {
+        if (!cancelled) setNotesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [materialId, t]);
+
+  const sortNotes = (rows: VideoNote[]) =>
+    [...rows].sort(
+      (left, right) =>
+        left.time_seconds - right.time_seconds ||
+        left.created_at - right.created_at ||
+        left.note_id.localeCompare(right.note_id),
+    );
+
+  const addNote = async () => {
+    if (!material || !noteDraft.trim() || noteBusy) return;
+    const requestedMaterialId = material.material_id;
+    setNoteBusy(true);
+    setNotesError(null);
+    try {
+      const saved = await createVideoNote(
+        requestedMaterialId,
+        noteDraft.trim(),
+        time,
+      );
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotes((current) => sortNotes([...current, saved]));
+      setNoteDraft("");
+    } catch (caught) {
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotesError(
+        caught instanceof Error ? caught.message : t("Note was not saved."),
+      );
+    } finally {
+      setNoteBusy(false);
+    }
+  };
+
+  const saveEditedNote = async () => {
+    if (!material || !editingNoteId || !editingDraft.trim() || noteBusy) return;
+    const requestedMaterialId = material.material_id;
+    setNoteBusy(true);
+    setNotesError(null);
+    try {
+      const saved = await updateVideoNote(
+        requestedMaterialId,
+        editingNoteId,
+        editingDraft.trim(),
+      );
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotes((current) =>
+        sortNotes(
+          current.map((note) =>
+            note.note_id === saved.note_id ? saved : note,
+          ),
+        ),
+      );
+      setEditingNoteId(null);
+      setEditingDraft("");
+    } catch (caught) {
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotesError(
+        caught instanceof Error ? caught.message : t("Note was not saved."),
+      );
+    } finally {
+      setNoteBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!material || !pendingDeleteId || noteBusy) return;
+    const requestedMaterialId = material.material_id;
+    setNoteBusy(true);
+    setNotesError(null);
+    try {
+      await deleteVideoNote(requestedMaterialId, pendingDeleteId);
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotes((current) =>
+        current.filter((note) => note.note_id !== pendingDeleteId),
+      );
+      if (editingNoteId === pendingDeleteId) {
+        setEditingNoteId(null);
+        setEditingDraft("");
+      }
+      setPendingDeleteId(null);
+    } catch (caught) {
+      if (activeMaterialIdRef.current !== requestedMaterialId) return;
+      setNotesError(
+        caught instanceof Error ? caught.message : t("Note was not deleted."),
+      );
+    } finally {
+      setNoteBusy(false);
+    }
+  };
+
   const closePane = () => {
     persist();
     close();
@@ -152,6 +305,11 @@ export function WatchingPane({ onClose }: { onClose(): void }) {
     setPlayerError(null);
     await refresh();
   }, [refresh]);
+
+  const retryTranscript = useCallback(async () => {
+    setPlayerError(null);
+    await refreshTranscript();
+  }, [refreshTranscript]);
 
   const handleController = useCallback(
     (controller: PlayerController | null) => {
@@ -297,48 +455,247 @@ export function WatchingPane({ onClose }: { onClose(): void }) {
             </a>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {material.transcript.status !== "ready" ? (
-              <div className="rounded-lg border border-[var(--border)] p-4 text-sm text-[var(--muted-foreground)]">
-                {t(
-                  "Transcript learning is unavailable ({{reason}}). Playback still works, but Explain here is disabled.",
-                  {
-                    reason: material.transcript.reason || t("no captions"),
-                  },
+            <div
+              className="mb-3 grid w-full max-w-56 grid-cols-2 rounded-lg bg-[var(--muted)] p-1"
+              role="tablist"
+              aria-label={t("Video learning panels")}
+            >
+              {(["transcript", "notes"] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === item}
+                  onClick={() => {
+                    setTab(item);
+                    setEditingNoteId(null);
+                  }}
+                  className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium ${tab === item ? "bg-[var(--background)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
+                >
+                  {item === "transcript" ? (
+                    <>
+                      <Captions className="h-3.5 w-3.5" />
+                      {t("Transcript")}
+                    </>
+                  ) : (
+                    <>
+                      <StickyNote className="h-3.5 w-3.5" />
+                      {t("Video notes")}
+                    </>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {tab === "transcript" ? (
+              material.transcript.status !== "ready" ? (
+                <div className="rounded-lg border border-[var(--border)] p-4 text-sm text-[var(--muted-foreground)]">
+                  <p>
+                    {t(
+                      "Transcript learning is unavailable ({{reason}}). Playback still works, but Explain here is disabled.",
+                      {
+                        reason: material.transcript.reason || t("no captions"),
+                      },
+                    )}
+                  </p>
+                  {material.playback.provider === "invidious" && (
+                    <button
+                      type="button"
+                      onClick={() => void retryTranscript()}
+                      disabled={loading}
+                      className="mt-3 rounded border border-[var(--border)] px-2 py-1 font-medium text-[var(--foreground)] disabled:opacity-50"
+                    >
+                      {t("Retry captions")}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={askHere}
+                    disabled={!cue}
+                    className="mb-3 rounded-lg bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)] disabled:opacity-50"
+                  >
+                    {t("Explain here")}
+                  </button>
+                  <div className="space-y-1">
+                    {material.transcript.cues.map((row, index) => {
+                      const active = row === cue;
+                      return (
+                        <button
+                          key={`${row.start}-${index}`}
+                          type="button"
+                          onClick={() => controllerRef.current?.seek(row.start)}
+                          className={`flex w-full gap-3 rounded-md px-2 py-1.5 text-left text-sm ${active ? "bg-blue-500/15 ring-1 ring-blue-500/30" : "hover:bg-[var(--muted)]"}`}
+                        >
+                          <span className="shrink-0 tabular-nums text-blue-600">
+                            {formatTime(row.start)}
+                          </span>
+                          <span>{row.text}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )
+            ) : (
+              <div className="space-y-3">
+                <form
+                  className="space-y-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void addNote();
+                  }}
+                >
+                  <textarea
+                    value={noteDraft}
+                    onChange={(event) => setNoteDraft(event.target.value)}
+                    placeholder={t("Note at {{time}}", {
+                      time: formatTime(time),
+                    })}
+                    className="min-h-20 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="submit"
+                    disabled={noteBusy || !noteDraft.trim()}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)] disabled:opacity-50"
+                  >
+                    {noteBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4" />
+                    )}
+                    {t("Add video note")}
+                  </button>
+                </form>
+
+                {notesError && (
+                  <p
+                    role="alert"
+                    className="rounded-lg border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm text-[var(--destructive)]"
+                  >
+                    {notesError}
+                  </p>
+                )}
+
+                {notesLoading ? (
+                  <p className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t("Loading notes.")}
+                  </p>
+                ) : notes.length ? (
+                  notes.map((note) => (
+                    <article
+                      key={`${note.notebook_id}:${note.note_id}`}
+                      className="rounded-lg border border-[var(--border)] p-3"
+                    >
+                      <div className="flex items-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            controllerRef.current?.seek(note.time_seconds)
+                          }
+                          className="shrink-0 rounded px-1.5 py-0.5 font-mono text-xs tabular-nums text-blue-600 hover:bg-blue-500/10"
+                        >
+                          {formatTime(note.time_seconds)}
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          {editingNoteId === note.note_id ? (
+                            <textarea
+                              value={editingDraft}
+                              onChange={(event) =>
+                                setEditingDraft(event.target.value)
+                              }
+                              aria-label={t("Edit note at {{time}}", {
+                                time: formatTime(note.time_seconds),
+                              })}
+                              className="min-h-20 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-sm"
+                            />
+                          ) : (
+                            <p className="whitespace-pre-wrap text-sm">
+                              {note.body}
+                            </p>
+                          )}
+                          {note.quote && (
+                            <blockquote className="mt-2 border-l-2 border-[var(--border)] pl-2 text-xs text-[var(--muted-foreground)]">
+                              {note.quote}
+                            </blockquote>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {editingNoteId === note.note_id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void saveEditedNote()}
+                                disabled={noteBusy || !editingDraft.trim()}
+                                className="rounded-md p-1.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                                aria-label={t("Save video note")}
+                              >
+                                <Check className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingNoteId(null)}
+                                disabled={noteBusy}
+                                className="rounded-md p-1.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                                aria-label={t("Cancel")}
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingNoteId(note.note_id);
+                                setEditingDraft(note.body);
+                              }}
+                              disabled={noteBusy}
+                              className="rounded-md p-1.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                              aria-label={t("Edit note at {{time}}", {
+                                time: formatTime(note.time_seconds),
+                              })}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteId(note.note_id)}
+                            disabled={noteBusy}
+                            className="rounded-md p-1.5 text-[var(--destructive)] hover:bg-[var(--destructive)]/10 disabled:opacity-50"
+                            aria-label={t("Delete note at {{time}}", {
+                              time: formatTime(note.time_seconds),
+                            })}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  !notesError && <p className="text-sm">{t("No notes yet.")}</p>
                 )}
               </div>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={askHere}
-                  disabled={!cue}
-                  className="mb-3 rounded-lg bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)] disabled:opacity-50"
-                >
-                  {t("Explain here")}
-                </button>
-                <div className="space-y-1">
-                  {material.transcript.cues.map((row, index) => {
-                    const active = row === cue;
-                    return (
-                      <button
-                        key={`${row.start}-${index}`}
-                        type="button"
-                        onClick={() => controllerRef.current?.seek(row.start)}
-                        className={`flex w-full gap-3 rounded-md px-2 py-1.5 text-left text-sm ${active ? "bg-blue-500/15 ring-1 ring-blue-500/30" : "hover:bg-[var(--muted)]"}`}
-                      >
-                        <span className="shrink-0 tabular-nums text-blue-600">
-                          {formatTime(row.start)}
-                        </span>
-                        <span>{row.text}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
             )}
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteId)}
+        title={t("Delete this note?")}
+        confirmLabel={t("Delete")}
+        tone="danger"
+        busy={noteBusy}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setPendingDeleteId(null)}
+      >
+        {t("This note will be removed from Video Learning.")}
+      </ConfirmDialog>
     </section>
   );
 }

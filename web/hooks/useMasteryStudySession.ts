@@ -5,9 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  useUnifiedChat,
+  useChatStateAdapter,
   type SessionConfiguration,
-} from "@/context/UnifiedChatContext";
+} from "@/features/chat/ChatStateAdapter";
 import { useMasteryPathActivity } from "@/hooks/useMasteryPathActivity";
 import {
   fetchMasteryTopic,
@@ -18,12 +18,13 @@ import {
   isMasteryDraftSessionReady,
   type MasteryDraftRouteGuard,
 } from "@/lib/mastery-study-route";
+import { courseSessionConfiguration } from "@/lib/course-session-scope";
 import { MASTERY_WORKSPACE_MODE } from "@/lib/workspace-mode";
 
 /**
  * Resolves which topic and which chat session a study route is showing.
  *
- * Route → session is a small state machine: a bare `/study` route opens a
+ * Route → session is a small state machine: a bare `/sessions` route opens a
  * draft and rewrites the URL once the session exists, while a route that
  * names a session must first prove that session belongs to this topic. Both
  * paths key their bookkeeping on the route so a fast topic switch can never
@@ -32,6 +33,7 @@ import { MASTERY_WORKSPACE_MODE } from "@/lib/workspace-mode";
 export function useMasteryStudySession(
   pathId: string,
   routeSessionId?: string,
+  courseId = "",
 ) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -41,7 +43,7 @@ export function useMasteryStudySession(
     configureSession,
     loadSession,
     showCachedSession,
-  } = useUnifiedChat();
+  } = useChatStateAdapter();
 
   const [topic, setTopic] = useState<MasteryTopic | null>(null);
   const [topicError, setTopicError] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export function useMasteryStudySession(
         routeKey,
         previousSessionId: state.sessionId,
       };
-      newSession(sessionConfiguration);
+      newSession(courseSessionConfiguration(sessionConfiguration, courseId));
       return;
     }
 
@@ -128,14 +130,22 @@ export function useMasteryStudySession(
           );
         }
         const cached = showCachedSession(routeSessionId);
-        if (cached) configureSession(sessionConfiguration, routeSessionId);
+        if (cached) {
+          configureSession(
+            courseSessionConfiguration(sessionConfiguration, courseId),
+            routeSessionId,
+          );
+        }
         return loadSession(
           routeSessionId,
           cached ? { revalidate: true } : undefined,
         );
       })
       .then(() => {
-        configureSession(sessionConfiguration, routeSessionId);
+        configureSession(
+          courseSessionConfiguration(sessionConfiguration, courseId),
+          routeSessionId,
+        );
         setSessionResolution({ routeKey, error: null });
       })
       .catch((reason: unknown) => {
@@ -148,6 +158,7 @@ export function useMasteryStudySession(
         });
       });
   }, [
+    courseId,
     configureSession,
     currentRouteKey,
     loadSession,
@@ -175,12 +186,18 @@ export function useMasteryStudySession(
       })
     )
       return;
+    const courseQuery = courseId
+      ? `?course=${encodeURIComponent(courseId)}`
+      : "";
     router.replace(
-      `/mastery/${encodeURIComponent(pathId)}/study/${encodeURIComponent(newSessionId)}`,
+      `/mastery/${encodeURIComponent(pathId)}/sessions/${encodeURIComponent(
+        newSessionId,
+      )}${courseQuery}`,
       { scroll: false },
     );
   }, [
     currentRouteKey,
+    courseId,
     pathId,
     routeSessionId,
     router,

@@ -1,5 +1,7 @@
 "use client";
 
+import { browserStorage } from "@/shared/storage";
+
 import {
   createContext,
   useCallback,
@@ -13,6 +15,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   getVideoMaterial,
+  refreshInvidiousTranscript,
   resolveVideo,
   type TimedMediaMaterial,
   type VideoProvider,
@@ -37,6 +40,7 @@ interface WatchingContextValue {
     providerOverride?: VideoProvider,
   ): Promise<void>;
   refresh(): Promise<void>;
+  refreshTranscript(): Promise<void>;
   close(): void;
   reportTime(seconds: number): void;
   clearError(): void;
@@ -58,16 +62,16 @@ export function WatchingProvider({ children }: { children: ReactNode }) {
     setWatchingMaterial(next.material_id);
     setWatchingViewport(next.playback.start_seconds || 0);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(LAST_MATERIAL_KEY, next.material_id);
-      window.localStorage.setItem(LAST_URL_KEY, next.source.url);
+      browserStorage.writeRaw("local", LAST_MATERIAL_KEY, next.material_id);
+      browserStorage.writeRaw("local", LAST_URL_KEY, next.source.url);
     }
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const materialId = window.localStorage.getItem(LAST_MATERIAL_KEY);
+    const materialId = browserStorage.readRaw("local", LAST_MATERIAL_KEY);
     if (!materialId) return;
-    const sourceUrl = window.localStorage.getItem(LAST_URL_KEY) || "";
+    const sourceUrl = browserStorage.readRaw("local", LAST_URL_KEY) || "";
     setLastUrl(sourceUrl);
     setLoading(true);
     void getVideoMaterial(materialId)
@@ -78,7 +82,7 @@ export function WatchingProvider({ children }: { children: ReactNode }) {
             ? caught.message
             : t("The player provider is unavailable."),
         );
-        window.localStorage.removeItem(LAST_MATERIAL_KEY);
+        browserStorage.removeRaw("local", LAST_MATERIAL_KEY);
       })
       .finally(() => setLoading(false));
   }, [accept, t]);
@@ -121,13 +125,30 @@ export function WatchingProvider({ children }: { children: ReactNode }) {
     }
   }, [accept, material, t]);
 
+  const refreshTranscript = useCallback(async () => {
+    if (!material) return;
+    setLoading(true);
+    setError(null);
+    try {
+      accept(await refreshInvidiousTranscript(material.material_id));
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : t("The player provider is unavailable."),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [accept, material, t]);
+
   const close = useCallback(() => {
     setMaterial(null);
     setWatchingMaterial(null);
     setError(null);
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem(LAST_MATERIAL_KEY);
-      window.localStorage.removeItem(LAST_URL_KEY);
+      browserStorage.removeRaw("local", LAST_MATERIAL_KEY);
+      browserStorage.removeRaw("local", LAST_URL_KEY);
     }
   }, []);
   const reportTime = useCallback(
@@ -145,6 +166,7 @@ export function WatchingProvider({ children }: { children: ReactNode }) {
       lastUrl,
       openUrl,
       refresh,
+      refreshTranscript,
       close,
       reportTime,
       clearError,
@@ -158,6 +180,7 @@ export function WatchingProvider({ children }: { children: ReactNode }) {
       lastUrl,
       openUrl,
       refresh,
+      refreshTranscript,
       close,
       reportTime,
       clearError,

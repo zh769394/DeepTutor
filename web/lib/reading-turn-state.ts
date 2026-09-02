@@ -22,6 +22,7 @@ export { READING_WORKSPACE_MODE };
 export interface ReadingTurnState {
   workspaceId: string | null;
   materialId: string | null;
+  materialRevision: number | null;
   locator: number;
   selection: string;
   timeSeconds: number | null;
@@ -30,6 +31,7 @@ export interface ReadingTurnState {
 const state: ReadingTurnState = {
   workspaceId: null,
   materialId: null,
+  materialRevision: null,
   locator: 0,
   selection: "",
   timeSeconds: null,
@@ -42,18 +44,33 @@ export function normalizeReadingMaterialId(value: unknown): string | null {
   return /^[0-9a-f]{8,64}$/.test(normalized) ? normalized : null;
 }
 
+/** Normalize an immutable ReadingStore content revision from wire/storage. */
+export function normalizeReadingMaterialRevision(
+  value: unknown,
+): number | null {
+  const revision = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
+}
+
 export function setReadingWorkspace(workspaceId: string | null): void {
   state.workspaceId = workspaceId;
   if (!workspaceId) {
     state.materialId = null;
+    state.materialRevision = null;
     state.locator = 0;
     state.selection = "";
     state.timeSeconds = null;
   }
 }
 
-export function setReadingMaterial(materialId: string | null): void {
+export function setReadingMaterial(
+  materialId: string | null,
+  materialRevision: number | null = null,
+): void {
   state.materialId = materialId;
+  state.materialRevision = materialId
+    ? normalizeReadingMaterialRevision(materialRevision)
+    : null;
   if (!materialId) {
     // Closing a document must not leave its viewport behind: the next turn
     // would tell the model the user is looking at a page of a closed file.
@@ -108,6 +125,7 @@ export function readingTurnFields(
 ): {
   reading_workspace_id?: string;
   reading_material_id?: string;
+  reading_material_revision?: number;
   reading_viewport?: {
     locator?: number;
     selection?: string;
@@ -126,6 +144,9 @@ export function readingTurnFields(
   return {
     ...(state.workspaceId ? { reading_workspace_id: state.workspaceId } : {}),
     ...(state.materialId ? { reading_material_id: state.materialId } : {}),
+    ...(state.materialId && state.materialRevision
+      ? { reading_material_revision: state.materialRevision }
+      : {}),
     ...(Object.keys(viewport).length ? { reading_viewport: viewport } : {}),
   };
 }
@@ -134,6 +155,7 @@ export function readingTurnFields(
 export function resetReadingTurnState(): void {
   state.workspaceId = null;
   state.materialId = null;
+  state.materialRevision = null;
   state.locator = 0;
   state.selection = "";
   state.timeSeconds = null;

@@ -9,6 +9,10 @@ export interface ReaderHeading {
   id: string;
   title: string;
   level: number;
+  /** EPUB spine locator containing this heading. */
+  locator?: number;
+  /** EPUB spine href used to navigate across chapter boundaries. */
+  sourceHref?: string;
 }
 
 export interface ReaderDisplayLine {
@@ -31,6 +35,35 @@ export function readerHeadingLine(line: string): ReaderHeading | null {
   const title = match[2].replace(/\s+#+$/, "").trim();
   if (!title) return null;
   return { id: "", title, level: match[1].length };
+}
+
+export interface EpubHeadingElement {
+  id?: string | null;
+  tagName: string;
+  textContent: string | null;
+}
+
+/** Extract EPUB headings while preserving publisher-provided anchors. */
+export function extractEpubHeadings(
+  elements: EpubHeadingElement[],
+  locator: number,
+  sourceHref?: string,
+): ReaderHeading[] {
+  const headings: ReaderHeading[] = [];
+  for (const element of elements) {
+    const match = /^h([1-6])$/i.exec(element.tagName);
+    if (!match) continue;
+    const title = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (!title) continue;
+    headings.push({
+      id: element.id?.trim() || headingAnchor(locator, headings.length),
+      title,
+      level: Number(match[1]),
+      locator,
+      sourceHref,
+    });
+  }
+  return headings;
 }
 
 /**

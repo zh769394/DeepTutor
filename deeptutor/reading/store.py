@@ -911,6 +911,7 @@ class ReadingStore:
             if index is None:
                 stored = dataclass_replace(
                     stored,
+                    material_revision=manifest.revision,
                     created_at=stored.created_at or now,
                     updated_at=now,
                 )
@@ -918,6 +919,7 @@ class ReadingStore:
             else:
                 stored = dataclass_replace(
                     stored,
+                    material_revision=existing[index].material_revision,
                     created_at=existing[index].created_at or now,
                     updated_at=now,
                 )

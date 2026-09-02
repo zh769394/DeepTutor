@@ -5,7 +5,7 @@ import { Fragment, memo, useMemo } from "react";
 import MarkdownRenderer from "@/components/common/MarkdownRenderer";
 import ModelThinkingCard from "@/components/common/ModelThinkingCard";
 import { useReading } from "@/context/ReadingContext";
-import type { StreamEvent } from "@/lib/unified-ws";
+import type { StreamEvent } from "@/features/chat/model/protocol";
 import { useWatching } from "@/context/WatchingContext";
 import {
   hasVisibleMarkdownContent,
@@ -34,6 +34,7 @@ interface AssistantResponseProps {
    */
   isStreaming?: boolean;
   readingMaterialId?: string;
+  readingMaterialRevision?: number;
   events?: StreamEvent[];
 }
 
@@ -42,6 +43,7 @@ function AssistantResponseImpl({
   className = "text-[16px] leading-[1.75]",
   isStreaming = false,
   readingMaterialId,
+  readingMaterialRevision,
   events,
 }: AssistantResponseProps) {
   const displayContent = useSmoothStreamText(content, isStreaming);
@@ -52,8 +54,13 @@ function AssistantResponseImpl({
   const { material } = useReading();
   const watching = useWatching();
   const verifiedLocators = useMemo(
-    () => verifiedReadingLocators(events, readingMaterialId),
-    [events, readingMaterialId],
+    () =>
+      verifiedReadingLocators(
+        events,
+        readingMaterialId,
+        readingMaterialRevision,
+      ),
+    [events, readingMaterialId, readingMaterialRevision],
   );
   const citedContent = useMemo(() => {
     if (watching.active && watching.material) {
@@ -61,15 +68,20 @@ function AssistantResponseImpl({
     }
     if (
       material?.unit === "segment" &&
-      (!readingMaterialId || material.material_id === readingMaterialId)
+      (!readingMaterialId || material.material_id === readingMaterialId) &&
+      (!readingMaterialRevision ||
+        material.revision === readingMaterialRevision)
     ) {
       return linkifyMediaTimestamps(displayContent);
     }
     return readingMaterialId && verifiedLocators.size > 0
       ? linkifyLocatorCitations(displayContent, {
           materialId: readingMaterialId,
+          materialRevision: readingMaterialRevision,
           allowedLocators: verifiedLocators,
-          ...(material?.material_id === readingMaterialId
+          ...(material?.material_id === readingMaterialId &&
+          (!readingMaterialRevision ||
+            material.revision === readingMaterialRevision)
             ? { maxLocator: material.unit_count }
             : {}),
         })
@@ -78,6 +90,7 @@ function AssistantResponseImpl({
     displayContent,
     material,
     readingMaterialId,
+    readingMaterialRevision,
     verifiedLocators,
     watching.active,
     watching.material,

@@ -365,6 +365,10 @@ async def test_grade_syncs_mastery_attempt_to_question_bank(path_id, session_sto
     assert entry["user_answer"] == "5"
     assert entry["correct_answer"] == "4"
     assert entry["is_correct"] is False
+    assert entry["source"] == "mastery_path"
+    assert entry["material_id"] == path_id
+    assert entry["section_id"] == kp_id
+    assert entry["section_title"] == "Truth tables"
 
     # An idempotent retry with a changed model argument must not overwrite the
     # committed learner answer in the auxiliary question bank.

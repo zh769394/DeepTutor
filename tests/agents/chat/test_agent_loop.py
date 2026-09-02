@@ -14,10 +14,10 @@ from deeptutor.agents.chat.agentic_pipeline import AgenticChatPipeline
 from deeptutor.capabilities.explore_context import explorer as explorer_mod
 from deeptutor.capabilities.mastery import MASTERY_TOOL_NAMES
 from deeptutor.capabilities.partner_group.tools import InvokeOtherTool
-from deeptutor.core.context import Attachment, UnifiedContext
+from deeptutor.core.context import Attachment, TurnRuntimeContext, UnifiedContext
 from deeptutor.core.stream import StreamEvent, StreamEventType
-from deeptutor.core.stream_bus import StreamBus
 from deeptutor.core.tool_protocol import ToolResult
+from deeptutor.runtime.stream_bus import StreamBus
 from deeptutor.services.llm import LLMProviderTransportError
 
 
@@ -39,8 +39,12 @@ def _llm_chunk(
     tool_calls: list[dict[str, Any]] | None = None,
     usage: Any = None,
     finish_reason: str | None = None,
+    reasoning_content: str | None = None,
+    provider_specific_fields: dict[str, Any] | None = None,
 ) -> SimpleNamespace:
     delta_fields: dict[str, Any] = {"content": content}
+    if reasoning_content is not None:
+        delta_fields["reasoning_content"] = reasoning_content
     if tool_calls is not None:
         delta_fields["tool_calls"] = [
             SimpleNamespace(
@@ -60,6 +64,7 @@ def _llm_chunk(
             SimpleNamespace(
                 delta=SimpleNamespace(**delta_fields),
                 finish_reason=finish_reason,
+                provider_specific_fields=provider_specific_fields,
             )
         ],
         usage=usage,
@@ -492,6 +497,37 @@ async def test_finish_first_round_no_tools(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_finish_round_persists_provider_response_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _Registry()
+    native_items = [{"type": "reasoning", "id": "rs_1", "summary": []}]
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    content="A direct answer.",
+                    reasoning_content="private reasoning",
+                    provider_specific_fields={"native_output_items": native_items},
+                )
+            ]
+        ]
+    )
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.registry = registry
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _context: [])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+    context = UnifiedContext(session_id="s1", user_message="Hello")
+
+    await _run(pipeline, context)
+
+    assert context.runtime.provider_response_state == {
+        "responses_output_items": native_items,
+        "reasoning_content": "private reasoning",
+    }
+
+
+@pytest.mark.asyncio
 async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
     """A tool round (narration text + a tool call) is followed by a tool-less
     finish round whose text is the answer — two LLM calls, no respond pass."""
@@ -500,7 +536,7 @@ async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
         [
             # Round 1: preamble (narration) text + a tool call.
             [
-                _llm_chunk(content="Searching."),
+                _llm_chunk(content="Searching.", reasoning_content="round one private reasoning"),
                 _llm_chunk(
                     tool_calls=[
                         {
@@ -513,7 +549,7 @@ async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
             ],
             # Round 2: the model sees the tool result in-protocol and finishes
             # by replying without tool calls.
-            [_llm_chunk(content="Found what was needed.")],
+            [_llm_chunk(content="Found what was needed.", reasoning_content="final reasoning")],
         ]
     )
     pipeline = AgenticChatPipeline(language="en")
@@ -540,6 +576,9 @@ async def test_tool_round_then_finish(monkeypatch: pytest.MonkeyPatch) -> None:
     assistant_tc = [m for m in second_round if m.get("role") == "assistant" and m.get("tool_calls")]
     assert assistant_tc and assistant_tc[0]["tool_calls"][0]["function"]["name"] == "web_search"
     assert assistant_tc[0]["content"] == "Searching."
+    assert assistant_tc[0]["_provider_response_state"] == {
+        "reasoning_content": "round one private reasoning"
+    }
     tool_msgs = [m for m in second_round if m.get("role") == "tool"]
     assert tool_msgs and "tool answer" in tool_msgs[0]["content"]
     result = _result(events)
@@ -617,7 +656,7 @@ async def test_partner_group_answer_plus_invoke_finishes_in_one_round(
     assert client.call_count == 1
     assert _contents(events) == ["The formal answer."]
     assert _result(events).metadata["response"] == "The formal answer."
-    assert context.metadata["_partner_group_invocation_proposal"] == {
+    assert context.extension("partner_group")["invocation_proposal"] == {
         "target_partner_id": "bob",
         "target_partner_name": "Bob",
         "question": "Which premise should we test?",
@@ -659,7 +698,7 @@ async def test_invoked_group_reply_strips_dangling_peer_question_in_one_round(
     assert client.call_count == 1
     assert _contents(events) == ["The complete invoked answer."]
     assert _result(events).metadata["response"] == "The complete invoked answer."
-    assert "_partner_group_invocation_proposal" not in context.metadata
+    assert "invocation_proposal" not in context.extension("partner_group")
 
 
 @pytest.mark.asyncio
@@ -1533,7 +1572,7 @@ async def test_initial_tool_choice_only_forces_first_round_and_hides_preamble(
         UnifiedContext(
             session_id="s1",
             user_message="Help with this task",
-            metadata={"wait_for_user_reply": _waiter},
+            runtime=TurnRuntimeContext(wait_for_user_reply=_waiter),
         ),
     )
 
@@ -1594,7 +1633,7 @@ async def test_ask_questions_uses_a_card_when_provider_rejects_tool_schemas(
         UnifiedContext(
             session_id="s1",
             user_message="Help with this task",
-            metadata={"wait_for_user_reply": _waiter},
+            runtime=TurnRuntimeContext(wait_for_user_reply=_waiter),
         ),
     )
 
@@ -1663,7 +1702,7 @@ async def test_ask_user_pause_resumes_and_streams_interleaved(
             session_id="s1",
             user_message="Quick question",
             enabled_tools=["ask_user"],
-            metadata={"wait_for_user_reply": _waiter},
+            runtime=TurnRuntimeContext(wait_for_user_reply=_waiter),
         ),
     )
 
@@ -1704,7 +1743,7 @@ async def test_ask_user_resume_end_loop_skips_further_llm(
 
         async def on_user_resume(self, context, ask_user, *, reply_text, answers):  # noqa: ANN001
             _ = ask_user, reply_text, answers
-            context.metadata["end_loop"] = True
+            context.interaction.end_loop = True
 
     class _PausingRegistry(_Registry):
         async def execute(self, name: str, **kwargs):
@@ -1757,7 +1796,7 @@ async def test_ask_user_resume_end_loop_skips_further_llm(
             session_id="s-end-loop",
             user_message="Quick question",
             enabled_tools=["ask_user"],
-            metadata={"wait_for_user_reply": _waiter},
+            runtime=TurnRuntimeContext(wait_for_user_reply=_waiter),
         ),
     )
 
@@ -1968,7 +2007,7 @@ async def test_budget_settlement_completes_quiz_ask_grade_and_feedback(
             session_id="s1",
             user_message="Quiz me",
             enabled_tools=["mastery_quiz", "ask_user", "mastery_grade"],
-            metadata={"wait_for_user_reply": _waiter},
+            runtime=TurnRuntimeContext(wait_for_user_reply=_waiter),
         ),
     )
 

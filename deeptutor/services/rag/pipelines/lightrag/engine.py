@@ -17,6 +17,7 @@ from .config import (
     build_vision_model_func,
     constructor_kwargs_from_settings,
     indexing_kwargs_from_settings,
+    lightrag_llm_selection_from_settings,
     normalize_mode,
     query_kwargs_from_settings,
 )
@@ -193,12 +194,16 @@ def build_rag(
     _register_parser()
     from lightrag.llm_roles import RoleLLMConfig
 
-    adapter_kwargs = {"io_bridge": io_bridge} if io_bridge is not None else {}
+    llm_adapter_kwargs: dict[str, Any] = {"llm_selection": lightrag_llm_selection_from_settings()}
+    embedding_adapter_kwargs: dict[str, Any] = {}
+    if io_bridge is not None:
+        llm_adapter_kwargs["io_bridge"] = io_bridge
+        embedding_adapter_kwargs["io_bridge"] = io_bridge
     constructor = {
         "working_dir": str(Path(working_dir)),
         "workspace": workspace_for(working_dir),
-        "llm_model_func": build_llm_model_func(**adapter_kwargs),
-        "embedding_func": build_embedding_func(**adapter_kwargs),
+        "llm_model_func": build_llm_model_func(**llm_adapter_kwargs),
+        "embedding_func": build_embedding_func(**embedding_adapter_kwargs),
         "auto_manage_storages_states": False,
         "vlm_process_enable": bool(enable_vlm),
         **indexing_kwargs_from_settings(),
@@ -206,7 +211,7 @@ def build_rag(
     }
     if enable_vlm:
         constructor["role_llm_configs"] = {
-            "vlm": RoleLLMConfig(func=build_vision_model_func(**adapter_kwargs))
+            "vlm": RoleLLMConfig(func=build_vision_model_func(**llm_adapter_kwargs))
         }
     return _controlled_class()(**constructor)
 
